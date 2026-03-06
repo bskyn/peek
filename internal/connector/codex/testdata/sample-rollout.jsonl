@@ -1,0 +1,13 @@
+{"timestamp":"2026-03-05T10:00:00.000Z","type":"session_meta","payload":{"id":"test-uuid-1234","cwd":"/projects/sample","cli_version":"0.110.0","model":"gpt-5","model_provider":"openai"}}
+{"timestamp":"2026-03-05T10:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","model_context_window":128000}}
+{"timestamp":"2026-03-05T10:00:01.100Z","type":"turn_context","payload":{"turn_id":"turn-1","cwd":"/projects/sample","model":"gpt-5"}}
+{"timestamp":"2026-03-05T10:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"List the files in the current directory"}}
+{"timestamp":"2026-03-05T10:00:03.000Z","type":"response_item","payload":{"type":"reasoning","summary":[],"content":null,"encrypted_content":"gAAAA_encrypted_reasoning_data"}}
+{"timestamp":"2026-03-05T10:00:04.000Z","type":"event_msg","payload":{"type":"agent_message","message":"I'll list the files for you.","phase":"commentary"}}
+{"timestamp":"2026-03-05T10:00:04.500Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll list the files for you."}],"phase":"commentary"}}
+{"timestamp":"2026-03-05T10:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"ls -la\"}","call_id":"call_test1"}}
+{"timestamp":"2026-03-05T10:00:06.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_test1","output":"total 8\ndrwxr-xr-x 3 user staff 96 Mar 5 10:00 .\n-rw-r--r-- 1 user staff 42 Mar 5 09:00 main.go"}}
+{"timestamp":"2026-03-05T10:00:07.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"output_tokens":100,"total_tokens":600}}}}
+{"timestamp":"2026-03-05T10:00:08.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The directory contains a single file: `main.go` (42 bytes)."}]}}
+{"timestamp":"2026-03-05T10:00:09.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"The directory contains a single file."}}
+{"timestamp":"2026-03-05T10:00:09.500Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"system instructions"}]}}
