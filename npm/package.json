@@ -1,0 +1,20 @@
+{
+  "name": "peek",
+  "version": "0.0.0",
+  "description": "Observe AI agent sessions in real-time",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bskyn/peek"
+  },
+  "bin": {
+    "peek": "bin/peek"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "install.js",
+    "bin/"
+  ]
+}

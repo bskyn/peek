@@ -1,0 +1,48 @@
+# Binaries
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Environment
+.env
+.env.*
+
+# Test
+*.test
+coverage.out
+
+# Go
+vendor/
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/settings.local.json
+.claude/skills/
+
+# npm
+npm/node_modules/
+npm/bin/
+
+# GoReleaser
+dist/
+
+brain/plans
