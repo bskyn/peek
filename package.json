@@ -8,13 +8,10 @@
     "url": "https://github.com/bskyn/peek"
   },
   "bin": {
-    "peek": "bin/peek"
+    "peek": "npm/bin/peek"
   },
   "scripts": {
-    "postinstall": "node install.js"
-  },
-  "files": [
-    "install.js",
-    "bin/"
-  ]
+    "postinstall": "node npm/install.js",
+    "install:dry-run": "node npm/install.js --dry-run"
+  }
 }

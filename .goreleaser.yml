@@ -44,6 +44,7 @@ brews:
   - repository:
       owner: bskyn
       name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/bskyn/peek"
     description: "Observe AI agent sessions in real-time"
     license: MIT
