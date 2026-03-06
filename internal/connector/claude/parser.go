@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	ev "github.com/bskyn/peek/internal/event"
@@ -23,6 +24,8 @@ type rawSessionEvent struct {
 	Subtype    string          `json:"subtype"`
 	Content    json.RawMessage `json:"content"`
 	Level      string          `json:"level"`
+	ToolUseID  string          `json:"toolUseID"`
+	ToolResult json.RawMessage `json:"toolUseResult"`
 }
 
 // rawMessage matches the message field in user/assistant events.
@@ -41,12 +44,39 @@ type rawUsage struct {
 
 // contentBlock represents a single block in the assistant's content array.
 type contentBlock struct {
-	Type     string          `json:"type"`
-	Text     string          `json:"text"`
-	Thinking string          `json:"thinking"`
-	Name     string          `json:"name"`
-	ID       string          `json:"id"`
-	Input    json.RawMessage `json:"input"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Thinking  string          `json:"thinking"`
+	Name      string          `json:"name"`
+	ID        string          `json:"id"`
+	ToolUseID string          `json:"tool_use_id"`
+	ToolName  string          `json:"tool_name"`
+	Input     json.RawMessage `json:"input"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+type rawProgressPayload struct {
+	Type       string               `json:"type"`
+	Output     string               `json:"output"`
+	FullOutput string               `json:"fullOutput"`
+	HookEvent  string               `json:"hookEvent"`
+	HookName   string               `json:"hookName"`
+	Command    string               `json:"command"`
+	Prompt     string               `json:"prompt"`
+	AgentID    string               `json:"agentId"`
+	Message    *rawProgressEnvelope `json:"message"`
+}
+
+type rawProgressEnvelope struct {
+	Type    string          `json:"type"`
+	Message json.RawMessage `json:"message"`
+}
+
+type rawToolResultContentBlock struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	ToolName string `json:"tool_name"`
 }
 
 // ParseLine parses a single JSONL line from a Claude session file and returns
@@ -111,9 +141,13 @@ func parseUserContentBlocks(blocks []contentBlock, raw rawSessionEvent, sessionI
 	for _, block := range blocks {
 		switch block.Type {
 		case "tool_result":
+			toolUseID := block.ToolUseID
+			if toolUseID == "" {
+				toolUseID = block.ID
+			}
 			payload := mustJSON(map[string]interface{}{
-				"tool_use_id": block.ID,
-				"text":        truncateString(string(block.Input), maxPayloadBytes),
+				"tool_use_id": toolUseID,
+				"text":        truncateString(extractToolResultText(block, raw.ToolResult), maxPayloadBytes),
 			})
 			events = append(events, ev.Event{
 				ID:          eventID(sessionID, seq),
@@ -225,13 +259,26 @@ func parseAssistantEvent(raw rawSessionEvent, sessionID string, ts time.Time, se
 }
 
 func parseProgressEvent(raw rawSessionEvent, sessionID string, ts time.Time, seq int64) ([]ev.Event, int64, error) {
+	subtype, text := summarizeProgress(raw.Data)
+	payload := map[string]interface{}{
+		"data": raw.Data,
+	}
+	if subtype != "" {
+		payload["subtype"] = subtype
+	}
+	if text != "" {
+		payload["text"] = truncateString(text, maxPayloadBytes)
+	}
+	if raw.ToolUseID != "" {
+		payload["tool_use_id"] = raw.ToolUseID
+	}
 	event := ev.Event{
 		ID:          eventID(sessionID, seq),
 		SessionID:   sessionID,
 		Timestamp:   ts,
 		Seq:         seq,
 		Type:        ev.EventProgress,
-		PayloadJSON: raw.Data,
+		PayloadJSON: mustJSON(payload),
 	}
 	return []ev.Event{event}, seq + 1, nil
 }
@@ -281,4 +328,262 @@ func truncateString(s string, maxBytes int) string {
 		return s
 	}
 	return s[:maxBytes] + "... (truncated)"
+}
+
+func extractToolResultText(block contentBlock, toolResult json.RawMessage) string {
+	if text := extractToolResultContent(block.Content); text != "" {
+		return text
+	}
+	// Older Claude versions stored tool output in "input" instead of "content".
+	if text := extractToolResultContent(block.Input); text != "" {
+		return text
+	}
+	if text := extractToolUseResultText(toolResult); text != "" {
+		return text
+	}
+	return ""
+}
+
+func extractToolResultContent(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+
+	var blocks []rawToolResultContentBlock
+	if err := json.Unmarshal(raw, &blocks); err == nil && len(blocks) > 0 {
+		parts := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			switch {
+			case strings.TrimSpace(block.Text) != "":
+				parts = append(parts, strings.TrimSpace(block.Text))
+			case strings.TrimSpace(block.ToolName) != "":
+				parts = append(parts, strings.TrimSpace(block.ToolName))
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	return ""
+}
+
+func extractToolUseResultText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var result struct {
+		Content  string   `json:"content"`
+		Stdout   string   `json:"stdout"`
+		Stderr   string   `json:"stderr"`
+		Matches  []string `json:"matches"`
+		Type     string   `json:"type"`
+		FilePath string   `json:"filePath"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return ""
+	}
+
+	switch {
+	case strings.TrimSpace(result.Content) != "":
+		return strings.TrimSpace(result.Content)
+	case strings.TrimSpace(result.Stdout) != "" || strings.TrimSpace(result.Stderr) != "":
+		return strings.TrimSpace(strings.TrimSpace(result.Stdout) + "\n" + strings.TrimSpace(result.Stderr))
+	case len(result.Matches) > 0:
+		return strings.Join(result.Matches, "\n")
+	case result.Type != "" && result.FilePath != "":
+		return fmt.Sprintf("%s: %s", result.Type, result.FilePath)
+	default:
+		return ""
+	}
+}
+
+func summarizeProgress(raw json.RawMessage) (subtype, text string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", ""
+	}
+
+	var progress rawProgressPayload
+	if err := json.Unmarshal(raw, &progress); err != nil {
+		return "", ""
+	}
+
+	if progress.Type == "" {
+		if text := strings.TrimSpace(progress.Output); text != "" {
+			return "", text
+		}
+		if text := strings.TrimSpace(progress.FullOutput); text != "" {
+			return "", text
+		}
+	}
+
+	switch progress.Type {
+	case "agent_progress":
+		return progress.Type, summarizeAgentProgress(progress)
+	case "bash_progress":
+		if text := strings.TrimSpace(progress.Output); text != "" {
+			return progress.Type, text
+		}
+		return progress.Type, strings.TrimSpace(progress.FullOutput)
+	case "hook_progress":
+		return progress.Type, firstNonEmpty(progress.HookName, progress.HookEvent, progress.Command)
+	default:
+		if progress.Message != nil {
+			return progress.Type, summarizeProgressMessage(progress.Message)
+		}
+		return progress.Type, ""
+	}
+}
+
+func summarizeAgentProgress(progress rawProgressPayload) string {
+	if prompt := firstLine(progress.Prompt); prompt != "" {
+		return prompt
+	}
+	return summarizeProgressMessage(progress.Message)
+}
+
+func summarizeProgressMessage(envelope *rawProgressEnvelope) string {
+	if envelope == nil {
+		return ""
+	}
+
+	switch envelope.Type {
+	case "assistant":
+		return summarizeAssistantMessage(envelope.Message)
+	case "user":
+		return summarizeUserMessage(envelope.Message)
+	default:
+		return ""
+	}
+}
+
+func summarizeAssistantMessage(raw json.RawMessage) string {
+	var msg rawMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return ""
+	}
+
+	var blocks []contentBlock
+	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+		var text string
+		if err := json.Unmarshal(msg.Content, &text); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(text)
+	}
+
+	for _, block := range blocks {
+		switch block.Type {
+		case "tool_use":
+			if summary := formatProgressToolUse(block.Name, block.Input); summary != "" {
+				return summary
+			}
+		case "text":
+			if text := strings.TrimSpace(block.Text); text != "" {
+				return text
+			}
+		case "thinking":
+			if thinking := firstLine(block.Thinking); thinking != "" {
+				return thinking
+			}
+		}
+	}
+
+	return ""
+}
+
+func summarizeUserMessage(raw json.RawMessage) string {
+	var msg rawMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return ""
+	}
+
+	var blocks []contentBlock
+	if err := json.Unmarshal(msg.Content, &blocks); err == nil {
+		for _, block := range blocks {
+			switch block.Type {
+			case "tool_result":
+				if text := extractToolResultText(block, nil); text != "" {
+					return text
+				}
+			case "text":
+				if text := strings.TrimSpace(block.Text); text != "" {
+					return text
+				}
+			}
+		}
+	}
+
+	var text string
+	if err := json.Unmarshal(msg.Content, &text); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func formatProgressToolUse(name string, input json.RawMessage) string {
+	if name == "" {
+		return ""
+	}
+
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(input, &params); err == nil {
+		switch {
+		case jsonString(params["file_path"]) != "":
+			return fmt.Sprintf("%s(%s)", name, jsonString(params["file_path"]))
+		case jsonString(params["pattern"]) != "":
+			pattern := fmt.Sprintf("pattern: %q", jsonString(params["pattern"]))
+			if path := jsonString(params["path"]); path != "" {
+				return fmt.Sprintf("%s(%s, path: %q)", name, pattern, path)
+			}
+			return fmt.Sprintf("%s(%s)", name, pattern)
+		case jsonString(params["command"]) != "":
+			return fmt.Sprintf("%s(%s)", name, firstLine(jsonString(params["command"])))
+		}
+	}
+
+	inputStr := strings.TrimSpace(string(input))
+	switch inputStr {
+	case "", "null", "{}":
+		return name
+	}
+	if len(inputStr) > 120 {
+		inputStr = inputStr[:120] + "..."
+	}
+	return fmt.Sprintf("%s(%s)", name, inputStr)
+}
+
+func jsonString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

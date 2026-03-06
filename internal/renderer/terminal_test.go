@@ -93,6 +93,16 @@ func TestRenderError(t *testing.T) {
 	}
 }
 
+func TestRenderProgressWithBody(t *testing.T) {
+	out := renderToString(makeEvent(event.EventProgress, map[string]interface{}{"text": `Glob(pattern: "**/*OutcomeAccordion*")`}))
+	if !strings.Contains(out, "Progress") {
+		t.Errorf("expected 'Progress' in output: %s", out)
+	}
+	if !strings.Contains(out, `Glob(pattern: "**/*OutcomeAccordion*")`) {
+		t.Errorf("expected progress text in output: %s", out)
+	}
+}
+
 func TestRenderTruncatesLongOutput(t *testing.T) {
 	var lines []string
 	for i := 0; i < 30; i++ {

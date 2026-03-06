@@ -111,7 +111,9 @@ func (r *TerminalRenderer) RenderEvent(ev event.Event) {
 
 	case event.EventProgress:
 		r.printHeader(ts, "Progress", gray)
-		// Progress events are compact — just show they happened
+		if text := event.PayloadText(ev.PayloadJSON); text != "" {
+			r.printBodyTruncated(text, maxOutputLines)
+		}
 
 	case event.EventSystem:
 		if m := event.PayloadModel(ev.PayloadJSON); m != "" {

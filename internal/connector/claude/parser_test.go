@@ -101,7 +101,7 @@ func TestParseAssistantWithToolUse(t *testing.T) {
 }
 
 func TestParseToolResult(t *testing.T) {
-	line := `{"type":"user","uuid":"u2","sessionId":"s1","timestamp":"2026-03-05T14:32:08.000Z","message":{"role":"user","content":[{"type":"tool_result","id":"toolu_123","input":"file contents here","content":""}]}}`
+	line := `{"type":"user","uuid":"u2","sessionId":"s1","timestamp":"2026-03-05T14:32:08.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_123","content":"file contents here"}]}}`
 
 	events, _, err := ParseLine(line, "s1", 0)
 	if err != nil {
@@ -112,6 +112,21 @@ func TestParseToolResult(t *testing.T) {
 	}
 	if events[0].Type != ev.EventToolResult {
 		t.Errorf("expected tool_result, got %s", events[0].Type)
+	}
+	if got := ev.PayloadText(events[0].PayloadJSON); got != "file contents here" {
+		t.Errorf("expected tool result text from content, got %q", got)
+	}
+}
+
+func TestParseLegacyToolResultInputFallback(t *testing.T) {
+	line := `{"type":"user","uuid":"u2","sessionId":"s1","timestamp":"2026-03-05T14:32:08.000Z","message":{"role":"user","content":[{"type":"tool_result","id":"toolu_123","input":"legacy file contents","content":""}]}}`
+
+	events, _, err := ParseLine(line, "s1", 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := ev.PayloadText(events[0].PayloadJSON); got != "legacy file contents" {
+		t.Errorf("expected legacy tool result text from input, got %q", got)
 	}
 }
 
@@ -127,6 +142,34 @@ func TestParseProgressEvent(t *testing.T) {
 	}
 	if events[0].Type != ev.EventProgress {
 		t.Errorf("expected progress, got %s", events[0].Type)
+	}
+	if got := ev.PayloadText(events[0].PayloadJSON); got != "running..." {
+		t.Errorf("expected progress text, got %q", got)
+	}
+}
+
+func TestParseAgentProgressToolUseSummary(t *testing.T) {
+	line := `{"type":"progress","timestamp":"2026-03-06T19:04:38.260Z","data":{"type":"agent_progress","message":{"type":"assistant","message":{"role":"assistant","model":"claude-haiku-4-5-20251001","content":[{"type":"tool_use","id":"toolu_01FYfwsqMNai2FWcvGaBr8T7","name":"Glob","input":{"pattern":"**/*OutcomeAccordion*"}}]}}}}`
+
+	events, _, err := ParseLine(line, "s1", 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := ev.PayloadText(events[0].PayloadJSON); !strings.Contains(got, `Glob(pattern: "**/*OutcomeAccordion*")`) {
+		t.Errorf("expected agent progress tool summary, got %q", got)
+	}
+}
+
+func TestParseAgentProgressToolResultSummary(t *testing.T) {
+	line := `{"type":"progress","timestamp":"2026-03-06T19:04:39.594Z","data":{"type":"agent_progress","message":{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01HzqxZo5bZVWZWNg8GbLN1n","type":"tool_result","content":"Found 2 files\napps/core/app/components/PredictionDetailPage/components/OutcomeAccordionCard.tsx\napps/core/app/components/PredictionDetailPage/PredictionDetail.page.tsx"}]}}}}`
+
+	events, _, err := ParseLine(line, "s1", 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	text := ev.PayloadText(events[0].PayloadJSON)
+	if !strings.Contains(text, "Found 2 files") {
+		t.Errorf("expected agent progress tool result summary, got %q", text)
 	}
 }
 
