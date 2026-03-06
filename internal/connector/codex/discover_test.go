@@ -18,13 +18,17 @@ func TestDiscoverLatest(t *testing.T) {
 
 	// Older file
 	old := filepath.Join(sessDir, "rollout-2026-03-05T10-00-00-aaa-bbb-ccc-ddd-eee.jsonl")
-	os.WriteFile(old, []byte(meta), 0o644)
+	if err := os.WriteFile(old, []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(10 * time.Millisecond)
 
 	// Newer file
 	newMeta := `{"timestamp":"2026-03-05T11:00:00Z","type":"session_meta","payload":{"id":"fff-ggg","cwd":"/projects/bar"}}` + "\n"
 	newer := filepath.Join(sessDir, "rollout-2026-03-05T11-00-00-fff-ggg-hhh-iii-jjj.jsonl")
-	os.WriteFile(newer, []byte(newMeta), 0o644)
+	if err := os.WriteFile(newer, []byte(newMeta), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	sf, err := Discover(dir, "")
 	if err != nil {
@@ -41,15 +45,21 @@ func TestDiscoverLatest(t *testing.T) {
 func TestDiscoverByID(t *testing.T) {
 	dir := t.TempDir()
 	sessDir := filepath.Join(dir, "sessions", "2026", "03", "05")
-	os.MkdirAll(sessDir, 0o755)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	meta := `{"timestamp":"2026-03-05T10:00:00Z","type":"session_meta","payload":{"id":"target-uuid","cwd":"/projects/baz"}}` + "\n"
 	target := filepath.Join(sessDir, "rollout-2026-03-05T10-00-00-target-uuid.jsonl")
-	os.WriteFile(target, []byte(meta), 0o644)
+	if err := os.WriteFile(target, []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Another file
 	other := filepath.Join(sessDir, "rollout-2026-03-05T09-00-00-other-uuid.jsonl")
-	os.WriteFile(other, []byte(`{"type":"session_meta","payload":{"cwd":"/other"}}`+"\n"), 0o644)
+	if err := os.WriteFile(other, []byte(`{"type":"session_meta","payload":{"cwd":"/other"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	sf, err := Discover(dir, "target-uuid")
 	if err != nil {
@@ -66,7 +76,9 @@ func TestDiscoverByID(t *testing.T) {
 func TestDiscoverByIDNotFound(t *testing.T) {
 	dir := t.TempDir()
 	sessDir := filepath.Join(dir, "sessions")
-	os.MkdirAll(sessDir, 0o755)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := Discover(dir, "nonexistent")
 	if err == nil {
@@ -77,7 +89,9 @@ func TestDiscoverByIDNotFound(t *testing.T) {
 func TestDiscoverEmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	sessDir := filepath.Join(dir, "sessions")
-	os.MkdirAll(sessDir, 0o755)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := Discover(dir, "")
 	if err == nil {

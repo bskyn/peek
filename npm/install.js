@@ -150,7 +150,7 @@ function installFromSource() {
     });
   } catch (err) {
     if (err.code === "ENOENT") {
-      throw new Error("Go 1.25+ is required for source installs");
+      throw new Error("Go 1.24+ is required for source installs");
     }
 
     throw err;

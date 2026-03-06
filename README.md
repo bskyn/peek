@@ -14,7 +14,7 @@ npm install -g github:bskyn/peek#main
 pnpm add -g github:bskyn/peek#main
 ```
 
-If you install a tagged release such as `#v0.1.0`, the installer downloads the matching GitHub Release asset. If you install from a branch or commit, it falls back to `go build`, so Go 1.25+ must be installed.
+If you install a tagged release such as `#v0.1.0`, the installer downloads the matching GitHub Release asset. If you install from a branch or commit, it falls back to `go build`, so Go 1.24+ must be installed.
 
 ### Homebrew
 
@@ -141,7 +141,8 @@ make build
 # Run tests
 make test
 
-# Lint
+# Install the pinned linter binary, then lint
+make lint-install
 make lint
 
 # Run from source

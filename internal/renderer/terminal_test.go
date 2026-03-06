@@ -19,7 +19,7 @@ func renderToString(ev event.Event) string {
 }
 
 func makeEvent(t event.EventType, payload map[string]interface{}) event.Event {
-	data, _ := json.Marshal(payload)
+	data := mustMarshal(payload)
 	return event.Event{
 		ID:          "test",
 		SessionID:   "s1",
@@ -227,7 +227,7 @@ func TestRenderEditShowsFullDiff(t *testing.T) {
 	oldStr := strings.Join(oldLines, "\n")
 	newStr := strings.Join(newLines, "\n")
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload := mustMarshal(map[string]interface{}{
 		"tool_name": "Edit",
 		"input":     json.RawMessage(`{"file_path":"/tmp/big.go","old_string":` + mustJSONString(oldStr) + `,"new_string":` + mustJSONString(newStr) + `}`),
 	})
@@ -265,8 +265,16 @@ func TestRenderUserMessageColor(t *testing.T) {
 }
 
 func mustJSONString(s string) string {
-	data, _ := json.Marshal(s)
+	data := mustMarshal(s)
 	return string(data)
+}
+
+func mustMarshal(v interface{}) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return data
 }
 
 func TestFormatModel(t *testing.T) {

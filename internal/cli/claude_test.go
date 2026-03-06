@@ -24,7 +24,9 @@ func TestIntegrationTailAndPersist(t *testing.T) {
 	// Create a temp Claude directory structure
 	claudeDir := t.TempDir()
 	projDir := filepath.Join(claudeDir, "projects", "test-project")
-	os.MkdirAll(projDir, 0o755)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	sessionID := "test-session-123"
 
@@ -71,13 +73,18 @@ func TestIntegrationTailAndPersist(t *testing.T) {
 
 	var jsonlContent []byte
 	for _, line := range lines {
-		data, _ := json.Marshal(line)
+		data, err := json.Marshal(line)
+		if err != nil {
+			t.Fatal(err)
+		}
 		jsonlContent = append(jsonlContent, data...)
 		jsonlContent = append(jsonlContent, '\n')
 	}
 
 	jsonlPath := filepath.Join(projDir, sessionID+".jsonl")
-	os.WriteFile(jsonlPath, jsonlContent, 0o644)
+	if err := os.WriteFile(jsonlPath, jsonlContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Set up store
 	dbFile := filepath.Join(t.TempDir(), "test.db")
@@ -95,7 +102,10 @@ func TestIntegrationTailAndPersist(t *testing.T) {
 	}
 
 	// Parse the JSONL content line by line
-	fileData, _ := os.ReadFile(jsonlPath)
+	fileData, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fileLines := splitLines(string(fileData))
 
 	var seq int64
@@ -140,11 +150,16 @@ func TestIntegrationTailAndPersist(t *testing.T) {
 		}
 		events, _, _ := parseLineForTest(line, internalID, 0)
 		for _, ev := range events {
-			st.InsertEvent(ev) // Should not error (INSERT OR IGNORE)
+			if err := st.InsertEvent(ev); err != nil {
+				t.Fatalf("re-insert event: %v", err)
+			}
 		}
 	}
 
-	events2, _ := st.GetEvents(internalID)
+	events2, err := st.GetEvents(internalID)
+	if err != nil {
+		t.Fatalf("get events after re-insert: %v", err)
+	}
 	if len(events2) != 5 {
 		t.Errorf("expected 5 events after re-insert, got %d", len(events2))
 	}

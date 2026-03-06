@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bskyn/peek/internal/store"
 	"github.com/spf13/cobra"
+
+	"github.com/bskyn/peek/internal/store"
 )
 
 func newSessionsCmd() *cobra.Command {

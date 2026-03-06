@@ -74,7 +74,9 @@ func parseSessionMeta(raw rawRolloutLine, sessionID string, ts time.Time, seq in
 		Model string `json:"model"`
 		CWD   string `json:"cwd"`
 	}
-	json.Unmarshal(raw.Payload, &meta)
+	if err := json.Unmarshal(raw.Payload, &meta); err != nil {
+		return nil, seq, fmt.Errorf("parse session_meta payload: %w", err)
+	}
 
 	event := ev.Event{
 		ID:        eventID(sessionID, seq),
@@ -95,7 +97,9 @@ func parseTurnContext(raw rawRolloutLine, sessionID string, ts time.Time, seq in
 	var ctx struct {
 		Model string `json:"model"`
 	}
-	json.Unmarshal(raw.Payload, &ctx)
+	if err := json.Unmarshal(raw.Payload, &ctx); err != nil {
+		return nil, seq, fmt.Errorf("parse turn_context payload: %w", err)
+	}
 
 	if ctx.Model == "" {
 		return nil, seq, nil

@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/bskyn/peek/internal/event"
 	_ "github.com/ncruces/go-sqlite3/driver"
 	_ "github.com/ncruces/go-sqlite3/embed"
+
+	"github.com/bskyn/peek/internal/event"
 )
 
 // Store provides persistence for sessions and events.
@@ -115,7 +116,9 @@ func (s *Store) InsertEvents(events []event.Event) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	stmt, err := tx.Prepare(
 		`INSERT OR IGNORE INTO events (id, session_id, ts, seq, type, role, parent_event_id, payload_json)

@@ -87,7 +87,10 @@ func TestDiscoverFromHistory(t *testing.T) {
 	}
 	var lines []byte
 	for _, e := range entries {
-		data, _ := json.Marshal(e)
+		data, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
 		lines = append(lines, data...)
 		lines = append(lines, '\n')
 	}
@@ -121,10 +124,14 @@ func TestDiscoverEmptyProjectsDir(t *testing.T) {
 func TestDiscoverSkipsAgentFiles(t *testing.T) {
 	dir := t.TempDir()
 	projDir := filepath.Join(dir, "projects", "proj1")
-	os.MkdirAll(projDir, 0o755)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create only agent files
-	os.WriteFile(filepath.Join(projDir, "agent-abc.jsonl"), []byte(`{}`+"\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(projDir, "agent-abc.jsonl"), []byte(`{}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := Discover(dir, "")
 	if err == nil {

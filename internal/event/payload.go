@@ -10,7 +10,9 @@ func PayloadText(payload json.RawMessage) string {
 	var p struct {
 		Text string `json:"text"`
 	}
-	json.Unmarshal(payload, &p)
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return ""
+	}
 	return p.Text
 }
 
@@ -20,7 +22,9 @@ func PayloadThinking(payload json.RawMessage) (string, int) {
 		Thinking   string `json:"thinking"`
 		TokenCount int    `json:"token_count"`
 	}
-	json.Unmarshal(payload, &p)
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return "", 0
+	}
 	return p.Thinking, p.TokenCount
 }
 
@@ -29,7 +33,9 @@ func PayloadModel(payload json.RawMessage) string {
 	var p struct {
 		Model string `json:"model"`
 	}
-	json.Unmarshal(payload, &p)
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return ""
+	}
 	return p.Model
 }
 
@@ -39,7 +45,9 @@ func PayloadToolCall(payload json.RawMessage) (name string, input string) {
 		ToolName string          `json:"tool_name"`
 		Input    json.RawMessage `json:"input"`
 	}
-	json.Unmarshal(payload, &p)
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return "", ""
+	}
 
 	inputStr := strings.TrimSpace(string(p.Input))
 	if len(inputStr) > 200 {

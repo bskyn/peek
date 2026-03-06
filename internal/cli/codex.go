@@ -12,12 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+	"github.com/spf13/cobra"
+
 	"github.com/bskyn/peek/internal/connector/codex"
 	"github.com/bskyn/peek/internal/renderer"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/tailer"
-	"github.com/fsnotify/fsnotify"
-	"github.com/spf13/cobra"
 )
 
 func newCodexCmd() *cobra.Command {

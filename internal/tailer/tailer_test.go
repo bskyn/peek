@@ -12,7 +12,9 @@ func TestTailExistingContent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
 
-	os.WriteFile(path, []byte("line1\nline2\nline3\n"), 0o644)
+	if err := os.WriteFile(path, []byte("line1\nline2\nline3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tl := New(path)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -30,7 +32,9 @@ func TestTailExistingContent(t *testing.T) {
 		close(done)
 	}()
 
-	tl.Tail(ctx, 0)
+	if _, err := tl.Tail(ctx, 0); err != nil {
+		t.Fatalf("tail: %v", err)
+	}
 	<-done
 
 	if len(lines) != 3 {
@@ -45,7 +49,9 @@ func TestTailFromOffset(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
 
-	os.WriteFile(path, []byte("line1\nline2\nline3\n"), 0o644)
+	if err := os.WriteFile(path, []byte("line1\nline2\nline3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Offset past "line1\n" (6 bytes)
 	tl := New(path)
@@ -64,7 +70,9 @@ func TestTailFromOffset(t *testing.T) {
 		close(done)
 	}()
 
-	tl.Tail(ctx, 6)
+	if _, err := tl.Tail(ctx, 6); err != nil {
+		t.Fatalf("tail: %v", err)
+	}
 	<-done
 
 	if len(lines) != 2 {
@@ -79,7 +87,9 @@ func TestTailAppendedContent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
 
-	os.WriteFile(path, []byte(""), 0o644)
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tl := New(path)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -87,6 +97,7 @@ func TestTailAppendedContent(t *testing.T) {
 
 	var lines []string
 	done := make(chan struct{})
+	errCh := make(chan error, 1)
 	go func() {
 		for line := range tl.Lines() {
 			lines = append(lines, line)
@@ -100,18 +111,47 @@ func TestTailAppendedContent(t *testing.T) {
 	// Append lines after a short delay
 	go func() {
 		time.Sleep(200 * time.Millisecond)
-		f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-		f.WriteString("appended1\n")
-		f.Close()
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if _, err := f.WriteString("appended1\n"); err != nil {
+			_ = f.Close()
+			errCh <- err
+			return
+		}
+		if err := f.Close(); err != nil {
+			errCh <- err
+			return
+		}
 
 		time.Sleep(200 * time.Millisecond)
-		f, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-		f.WriteString("appended2\n")
-		f.Close()
+		f, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if _, err := f.WriteString("appended2\n"); err != nil {
+			_ = f.Close()
+			errCh <- err
+			return
+		}
+		if err := f.Close(); err != nil {
+			errCh <- err
+			return
+		}
 	}()
 
-	tl.Tail(ctx, 0)
+	if _, err := tl.Tail(ctx, 0); err != nil {
+		t.Fatalf("tail: %v", err)
+	}
 	<-done
+	select {
+	case err := <-errCh:
+		t.Fatalf("append: %v", err)
+	default:
+	}
 
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 appended lines, got %d: %v", len(lines), lines)
@@ -124,14 +164,18 @@ func TestTailAppendedContent(t *testing.T) {
 func TestTailContextCancellation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
-	os.WriteFile(path, []byte(""), 0o644)
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tl := New(path)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
 	go func() {
-		tl.Tail(ctx, 0)
+		if _, err := tl.Tail(ctx, 0); err != nil {
+			t.Errorf("tail: %v", err)
+		}
 		close(done)
 	}()
 
@@ -149,7 +193,9 @@ func TestTailCursorTracking(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
 
-	os.WriteFile(path, []byte("line1\nline2\n"), 0o644)
+	if err := os.WriteFile(path, []byte("line1\nline2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tl := New(path)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -164,7 +210,10 @@ func TestTailCursorTracking(t *testing.T) {
 		}
 	}()
 
-	finalOffset, _ := tl.Tail(ctx, 0)
+	finalOffset, err := tl.Tail(ctx, 0)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
 
 	// "line1\nline2\n" = 12 bytes
 	if finalOffset != 12 {

@@ -13,16 +13,16 @@ const maxPayloadBytes = 512 * 1024 // 512KB truncation limit
 
 // rawSessionEvent matches the top-level structure of a Claude session JSONL line.
 type rawSessionEvent struct {
-	Type      string          `json:"type"`
-	UUID      string          `json:"uuid"`
-	ParentUUID string         `json:"parentUuid"`
-	SessionID string          `json:"sessionId"`
-	Timestamp string          `json:"timestamp"`
-	Message   json.RawMessage `json:"message"`
-	Data      json.RawMessage `json:"data"`
-	Subtype   string          `json:"subtype"`
-	Content   json.RawMessage `json:"content"`
-	Level     string          `json:"level"`
+	Type       string          `json:"type"`
+	UUID       string          `json:"uuid"`
+	ParentUUID string          `json:"parentUuid"`
+	SessionID  string          `json:"sessionId"`
+	Timestamp  string          `json:"timestamp"`
+	Message    json.RawMessage `json:"message"`
+	Data       json.RawMessage `json:"data"`
+	Subtype    string          `json:"subtype"`
+	Content    json.RawMessage `json:"content"`
+	Level      string          `json:"level"`
 }
 
 // rawMessage matches the message field in user/assistant events.
@@ -164,8 +164,8 @@ func parseAssistantEvent(raw rawSessionEvent, sessionID string, ts time.Time, se
 		switch block.Type {
 		case "thinking":
 			tokenCount := len(block.Thinking) / 4 // rough estimate
-			if msg.Usage != nil {
-				// Use actual token count if available (not per-block though)
+			if msg.Usage != nil && msg.Usage.OutputTokens > 0 {
+				tokenCount = msg.Usage.OutputTokens
 			}
 			payload := map[string]interface{}{
 				"thinking":    truncateString(block.Thinking, maxPayloadBytes),
@@ -276,35 +276,9 @@ func mustJSON(v interface{}) json.RawMessage {
 	return data
 }
 
-
 func truncateString(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
 	return s[:maxBytes] + "... (truncated)"
 }
-
-
-// toolResultBlock is used for parsing tool_result content in user messages.
-type toolResultBlock struct {
-	Type      string          `json:"type"`
-	ToolUseID string          `json:"tool_use_id"`
-	Content   json.RawMessage `json:"content"`
-	IsError   bool            `json:"is_error"`
-}
-
-// ParseToolResults extracts tool_result blocks from a user message content array.
-func parseToolResultBlocks(content json.RawMessage) []toolResultBlock {
-	var blocks []toolResultBlock
-	if err := json.Unmarshal(content, &blocks); err != nil {
-		return nil
-	}
-	var results []toolResultBlock
-	for _, b := range blocks {
-		if b.Type == "tool_result" {
-			results = append(results, b)
-		}
-	}
-	return results
-}
-
