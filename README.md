@@ -4,22 +4,22 @@ Observe and inspect AI agent sessions in real-time. Tail Claude Code and Codex C
 
 ## Install
 
+### GitHub with npm or pnpm
+
+Install directly from GitHub without publishing to npm:
+
+```sh
+npm install -g github:bskyn/peek#main
+# or
+pnpm add -g github:bskyn/peek#main
+```
+
+If you install a tagged release such as `#v0.1.0`, the installer downloads the matching GitHub Release asset. If you install from a branch or commit, it falls back to `go build`, so Go 1.25+ must be installed.
+
 ### Homebrew
 
 ```sh
 brew install bskyn/tap/peek
-```
-
-### npm / pnpm / bun
-
-```sh
-npm i -g peek
-```
-
-### curl
-
-```sh
-curl -fsSL https://github.com/bskyn/peek/releases/latest/download/install.sh | sh
 ```
 
 ### Go
@@ -35,6 +35,15 @@ git clone https://github.com/bskyn/peek.git
 cd peek
 make build
 ./bin/peek --version
+```
+
+### Agent bootstrap
+
+If you want Claude Code or Codex CLI to install `peek` for you, this is the shortest working sequence:
+
+```sh
+npm install -g github:bskyn/peek#main
+peek --version
 ```
 
 ## Usage
