@@ -19,7 +19,10 @@ import (
 	"github.com/bskyn/peek/internal/renderer"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/tailer"
+	"github.com/bskyn/peek/internal/viewer"
 )
+
+var codexWatchPollInterval = 2 * time.Second
 
 func newCodexCmd() *cobra.Command {
 	var replay bool
@@ -39,6 +42,7 @@ func newCodexCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&replay, "replay", false, "Replay the full session from the beginning, ignoring saved cursor")
+	addViewerFlags(cmd)
 
 	return cmd
 }
@@ -68,19 +72,27 @@ func runCodex(sessionID string, replay bool) error {
 		cancel()
 	}()
 
+	rt, err := viewer.Start(ctx, st, buildViewerOptions("codex-"+sf.SessionID), nil)
+	if err != nil {
+		return fmt.Errorf("start viewer: %w", err)
+	}
+	if rt != nil {
+		fmt.Printf("Viewer: %s\n\n", rt.InitialURL(buildViewerOptions("codex-"+sf.SessionID)))
+	}
+
 	rend := renderer.NewTerminalAuto()
 	rend.Source = "Codex"
 
 	// Disable follow-mode when a specific session ID was provided
 	if sessionID != "" {
 		rend.RenderSessionBanner(sf.SessionID, sf.Path, sf.ProjectPath)
-		return tailCodexSession(ctx, st, rend, sf, replay)
+		return tailCodexSession(ctx, st, rend, rt, sf, replay)
 	}
 
-	return followCodexSessions(ctx, st, rend, codexDir, sf, replay)
+	return followCodexSessions(ctx, st, rend, rt, codexDir, sf, replay)
 }
 
-func followCodexSessions(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, codexDir string, sf *codex.SessionFile, replay bool) error {
+func followCodexSessions(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, rt *viewer.Runtime, codexDir string, sf *codex.SessionFile, replay bool) error {
 	for {
 		rend.RenderSessionBanner(sf.SessionID, sf.Path, sf.ProjectPath)
 
@@ -91,7 +103,7 @@ func followCodexSessions(ctx context.Context, st *store.Store, rend *renderer.Te
 
 		tailDone := make(chan error, 1)
 		go func() {
-			tailDone <- tailCodexSession(tailCtx, st, rend, sf, replay)
+			tailDone <- tailCodexSession(tailCtx, st, rend, rt, sf, replay)
 		}()
 
 		var newSF *codex.SessionFile
@@ -114,16 +126,17 @@ func followCodexSessions(ctx context.Context, st *store.Store, rend *renderer.Te
 	}
 }
 
-func tailCodexSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, sf *codex.SessionFile, replay bool) error {
+func tailCodexSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, rt *viewer.Runtime, sf *codex.SessionFile, replay bool) error {
 	internalSessionID := "codex-" + sf.SessionID
-
-	_, err := st.GetSession(internalSessionID)
-	if err != nil {
-		sess := sf.ToSession(internalSessionID)
-		if err := st.CreateSession(sess); err != nil {
-			return fmt.Errorf("create session: %w", err)
-		}
+	if rt != nil {
+		rt.SetActiveSessionID(internalSessionID)
 	}
+
+	sess := sf.ToSession(internalSessionID)
+	if err := st.CreateSession(sess); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	publishSessionSummary(st, rt, internalSessionID)
 
 	var offset int64
 	if !replay {
@@ -160,19 +173,19 @@ func tailCodexSession(ctx context.Context, st *store.Store, rend *renderer.Termi
 				continue
 			}
 
-			allInserted := true
+			insertedEvents, err := st.AppendEvents(parsedEvents)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+				insertFailed.Store(true)
+				continue
+			}
+
 			for _, ev := range parsedEvents {
-				if err := st.InsertEvent(ev); err != nil {
-					fmt.Fprintf(os.Stderr, "store error: %v\n", err)
-					allInserted = false
-				}
 				rend.RenderEvent(ev)
 			}
 
-			if !allInserted {
-				insertFailed.Store(true)
-			}
-
+			publishSessionSummary(st, rt, internalSessionID)
+			publishInsertedEvents(rt, insertedEvents)
 			seq = nextSeq
 		}
 	}()
@@ -209,6 +222,7 @@ func watchForNewCodexSession(ctx context.Context, codexDir string, currentSF *co
 	// Snapshot existing rollout files in today's date dir
 	todayDir := todayDateDir(sessionsDir)
 	knownFiles := snapshotRolloutFiles(todayDir)
+	pendingFiles := make(map[string]bool)
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -222,7 +236,49 @@ func watchForNewCodexSession(ctx context.Context, codexDir string, currentSF *co
 		addDateDirTree(watcher, todayDir)
 	}
 
-	ticker := time.NewTicker(2 * time.Second)
+	trySwitch := func(path string) bool {
+		base := filepath.Base(path)
+		if !strings.HasPrefix(base, "rollout-") || !strings.HasSuffix(base, ".jsonl") {
+			return false
+		}
+		if knownFiles[path] {
+			return false
+		}
+
+		// Codex can create the rollout file before session_meta is flushed.
+		// Keep the file pending until we can read the cwd and decide.
+		newCWD := codex.ReadCWDFromMeta(path)
+		if newCWD == "" {
+			pendingFiles[path] = true
+			return false
+		}
+
+		delete(pendingFiles, path)
+		if currentSF.ProjectPath != "" && newCWD != currentSF.ProjectPath {
+			knownFiles[path] = true
+			return false
+		}
+
+		info, err := os.Stat(path)
+		if err != nil {
+			return false
+		}
+
+		knownFiles[path] = true
+		sf := &codex.SessionFile{
+			Path:        path,
+			SessionID:   codex.ExtractUUID(base),
+			ProjectPath: newCWD,
+			ModTime:     info.ModTime(),
+		}
+		select {
+		case ch <- sf:
+		default:
+		}
+		return true
+	}
+
+	ticker := time.NewTicker(codexWatchPollInterval)
 	defer ticker.Stop()
 
 	check := func() {
@@ -247,27 +303,9 @@ func watchForNewCodexSession(ctx context.Context, codexDir string, currentSF *co
 			if knownFiles[path] {
 				continue
 			}
-			// Read the new file's CWD and only switch if same project
-			newCWD := codex.ReadCWDFromMeta(path)
-			if currentSF.ProjectPath != "" && newCWD != currentSF.ProjectPath {
-				knownFiles[path] = true // don't check again
-				continue
+			if trySwitch(path) {
+				return
 			}
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			sf := &codex.SessionFile{
-				Path:        path,
-				SessionID:   codex.ExtractUUID(name),
-				ProjectPath: newCWD,
-				ModTime:     info.ModTime(),
-			}
-			select {
-			case ch <- sf:
-			default:
-			}
-			return
 		}
 	}
 
@@ -283,8 +321,17 @@ func watchForNewCodexSession(ctx context.Context, codexDir string, currentSF *co
 				// New date directory — watch it
 				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
 					addDateDirTree(watcher, ev.Name)
+				} else {
+					if trySwitch(ev.Name) {
+						return
+					}
 				}
 				check()
+			}
+			if ev.Has(fsnotify.Write) && pendingFiles[ev.Name] {
+				if trySwitch(ev.Name) {
+					return
+				}
 			}
 		case <-watcher.Errors:
 			continue

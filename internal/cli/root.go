@@ -5,9 +5,13 @@ import (
 )
 
 var (
-	version = "dev"
-	dbPath  string
-	verbose bool
+	version     = "dev"
+	dbPath      string
+	verbose     bool
+	webEnabled  bool
+	noWeb       bool
+	openBrowser bool
+	webPort     int
 )
 
 func newRootCmd() *cobra.Command {

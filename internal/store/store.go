@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,35 @@ import (
 // Store provides persistence for sessions and events.
 type Store struct {
 	db *sql.DB
+}
+
+// SessionSummary is the read model used by the viewer.
+type SessionSummary struct {
+	ID              string    `json:"id"`
+	Source          string    `json:"source"`
+	ProjectPath     string    `json:"project_path"`
+	SourceSessionID string    `json:"source_session_id"`
+	ParentSessionID string    `json:"parent_session_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	EventCount      int64     `json:"event_count"`
+}
+
+// ChildSessionSummary is a thin child-session read model.
+type ChildSessionSummary = SessionSummary
+
+// SessionDetail returns the selected session plus its branch metadata.
+type SessionDetail struct {
+	Session       SessionSummary        `json:"session"`
+	RootSession   SessionSummary        `json:"root_session"`
+	ChildSessions []ChildSessionSummary `json:"child_sessions"`
+}
+
+// EventPage is a paginated event response.
+type EventPage struct {
+	Events       []event.Event `json:"events"`
+	HasMore      bool          `json:"has_more"`
+	NextAfterSeq int64         `json:"next_after_seq,omitempty"`
 }
 
 // Open opens or creates a SQLite database at the given path.
@@ -47,11 +77,26 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// CreateSession inserts a new session. Duplicate IDs are silently ignored.
+// CreateSession inserts or updates a session.
 func (s *Store) CreateSession(sess event.Session) error {
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO sessions (id, source, project_path, source_session_id, parent_session_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, source, project_path, source_session_id, parent_session_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   source = excluded.source,
+		   project_path = CASE
+		     WHEN excluded.project_path != '' THEN excluded.project_path
+		     ELSE sessions.project_path
+		   END,
+		   source_session_id = CASE
+		     WHEN excluded.source_session_id != '' THEN excluded.source_session_id
+		     ELSE sessions.source_session_id
+		   END,
+		   parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
+		   updated_at = CASE
+		     WHEN sessions.updated_at > excluded.updated_at THEN sessions.updated_at
+		     ELSE excluded.updated_at
+		   END`,
 		sess.ID, sess.Source, sess.ProjectPath, sess.SourceSessionID, nilIfEmpty(sess.ParentSessionID),
 		sess.CreatedAt.Format(time.RFC3339Nano), sess.UpdatedAt.Format(time.RFC3339Nano),
 	)
@@ -75,11 +120,11 @@ func (s *Store) GetSession(id string) (*event.Session, error) {
 	return &sess, nil
 }
 
-// ListSessions returns all sessions ordered by creation time descending.
+// ListSessions returns all sessions ordered by most recent activity descending.
 func (s *Store) ListSessions() ([]event.Session, error) {
 	rows, err := s.db.Query(
 		`SELECT id, source, project_path, source_session_id, COALESCE(parent_session_id, ''), created_at, updated_at
-		 FROM sessions ORDER BY created_at DESC`)
+		 FROM sessions ORDER BY updated_at DESC, created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -101,20 +146,25 @@ func (s *Store) ListSessions() ([]event.Session, error) {
 
 // InsertEvent inserts a single event. Duplicate (session_id, seq) is ignored.
 func (s *Store) InsertEvent(ev event.Event) error {
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO events (id, session_id, ts, seq, type, role, parent_event_id, payload_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.ID, ev.SessionID, ev.Timestamp.Format(time.RFC3339Nano), ev.Seq, string(ev.Type),
-		ev.Role, nilIfEmpty(ev.ParentEventID), string(ev.PayloadJSON),
-	)
+	_, err := s.AppendEvents([]event.Event{ev})
 	return err
 }
 
 // InsertEvents inserts multiple events in a transaction.
 func (s *Store) InsertEvents(events []event.Event) error {
+	_, err := s.AppendEvents(events)
+	return err
+}
+
+// AppendEvents inserts multiple events and returns the events that were newly persisted.
+func (s *Store) AppendEvents(events []event.Event) ([]event.Event, error) {
+	if len(events) == 0 {
+		return nil, nil
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		_ = tx.Rollback()
@@ -124,21 +174,47 @@ func (s *Store) InsertEvents(events []event.Event) error {
 		`INSERT OR IGNORE INTO events (id, session_id, ts, seq, type, role, parent_event_id, payload_json)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer stmt.Close()
 
+	inserted := make([]event.Event, 0, len(events))
+	latestBySession := make(map[string]time.Time)
+
 	for _, ev := range events {
-		_, err := stmt.Exec(
+		result, err := stmt.Exec(
 			ev.ID, ev.SessionID, ev.Timestamp.Format(time.RFC3339Nano), ev.Seq, string(ev.Type),
 			ev.Role, nilIfEmpty(ev.ParentEventID), string(ev.PayloadJSON),
 		)
 		if err != nil {
-			return err
+			return nil, err
+		}
+
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if rows == 0 {
+			continue
+		}
+
+		inserted = append(inserted, ev)
+		if latest, ok := latestBySession[ev.SessionID]; !ok || ev.Timestamp.After(latest) {
+			latestBySession[ev.SessionID] = ev.Timestamp
 		}
 	}
 
-	return tx.Commit()
+	for sessionID, ts := range latestBySession {
+		if err := touchSessionTx(tx, sessionID, ts); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return inserted, nil
 }
 
 // GetEvents returns all events for a session ordered by sequence number.
@@ -163,6 +239,140 @@ func (s *Store) GetEvents(sessionID string) ([]event.Event, error) {
 		events = append(events, ev)
 	}
 	return events, rows.Err()
+}
+
+// ListSessionSummaries returns all sessions ordered by most recent activity.
+func (s *Store) ListSessionSummaries() ([]SessionSummary, error) {
+	rows, err := s.db.Query(sessionSummarySelect + `
+		GROUP BY s.id, s.source, s.project_path, s.source_session_id, s.parent_session_id, s.created_at, s.updated_at
+		ORDER BY s.updated_at DESC, s.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	summaries := make([]SessionSummary, 0)
+	for rows.Next() {
+		summary, err := scanSessionSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, rows.Err()
+}
+
+// GetSessionSummary loads one session summary.
+func (s *Store) GetSessionSummary(id string) (SessionSummary, error) {
+	row := s.db.QueryRow(sessionSummarySelect+`
+		AND s.id = ?
+		GROUP BY s.id, s.source, s.project_path, s.source_session_id, s.parent_session_id, s.created_at, s.updated_at`, id)
+	summary, err := scanSessionSummary(row)
+	if err != nil {
+		return SessionSummary{}, err
+	}
+	return summary, nil
+}
+
+// ListChildSessionSummaries returns child sessions for a root session.
+func (s *Store) ListChildSessionSummaries(parentSessionID string) ([]ChildSessionSummary, error) {
+	rows, err := s.db.Query(sessionSummarySelect+`
+		AND s.parent_session_id = ?
+		GROUP BY s.id, s.source, s.project_path, s.source_session_id, s.parent_session_id, s.created_at, s.updated_at
+		ORDER BY s.created_at ASC, s.id ASC`, parentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	children := make([]ChildSessionSummary, 0)
+	for rows.Next() {
+		child, err := scanSessionSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+	}
+	return children, rows.Err()
+}
+
+// GetSessionDetail returns a session plus its branch context.
+func (s *Store) GetSessionDetail(id string) (SessionDetail, error) {
+	sessionSummary, err := s.GetSessionSummary(id)
+	if err != nil {
+		return SessionDetail{}, err
+	}
+
+	rootID := sessionSummary.ID
+	if sessionSummary.ParentSessionID != "" {
+		rootID = sessionSummary.ParentSessionID
+	}
+
+	rootSummary := sessionSummary
+	if rootID != sessionSummary.ID {
+		rootSummary, err = s.GetSessionSummary(rootID)
+		if err != nil {
+			return SessionDetail{}, err
+		}
+	}
+
+	children, err := s.ListChildSessionSummaries(rootID)
+	if err != nil {
+		return SessionDetail{}, err
+	}
+
+	return SessionDetail{
+		Session:       sessionSummary,
+		RootSession:   rootSummary,
+		ChildSessions: children,
+	}, nil
+}
+
+// GetEventPage returns events for a session after the given sequence.
+func (s *Store) GetEventPage(sessionID string, afterSeq int64, limit int) (EventPage, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, session_id, ts, seq, type, role, COALESCE(parent_event_id, ''), payload_json
+		 FROM events
+		 WHERE session_id = ? AND seq > ?
+		 ORDER BY seq
+		 LIMIT ?`,
+		sessionID, afterSeq, limit+1,
+	)
+	if err != nil {
+		return EventPage{}, err
+	}
+	defer rows.Close()
+
+	events := make([]event.Event, 0, limit)
+	var nextAfterSeq int64
+	for rows.Next() {
+		ev, err := scanEvent(rows)
+		if err != nil {
+			return EventPage{}, err
+		}
+		if len(events) == limit {
+			return EventPage{
+				Events:       events,
+				HasMore:      true,
+				NextAfterSeq: nextAfterSeq,
+			}, nil
+		}
+		nextAfterSeq = ev.Seq
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return EventPage{}, err
+	}
+
+	return EventPage{
+		Events:       events,
+		HasMore:      false,
+		NextAfterSeq: nextAfterSeq,
+	}, nil
 }
 
 // Cursor represents a file tailing position.
@@ -206,4 +416,90 @@ func nilIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+const sessionSummarySelect = `
+SELECT
+	s.id,
+	s.source,
+	s.project_path,
+	s.source_session_id,
+	COALESCE(s.parent_session_id, ''),
+	s.created_at,
+	s.updated_at,
+	COUNT(e.id)
+FROM sessions s
+LEFT JOIN events e ON e.session_id = s.id
+WHERE 1 = 1`
+
+type sessionSummaryScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSessionSummary(scanner sessionSummaryScanner) (SessionSummary, error) {
+	var summary SessionSummary
+	var createdAt string
+	var updatedAt string
+	err := scanner.Scan(
+		&summary.ID,
+		&summary.Source,
+		&summary.ProjectPath,
+		&summary.SourceSessionID,
+		&summary.ParentSessionID,
+		&createdAt,
+		&updatedAt,
+		&summary.EventCount,
+	)
+	if err != nil {
+		return SessionSummary{}, err
+	}
+	summary.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	summary.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	return summary, nil
+}
+
+type eventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEvent(scanner eventScanner) (event.Event, error) {
+	var ev event.Event
+	var ts string
+	var payload string
+	if err := scanner.Scan(&ev.ID, &ev.SessionID, &ts, &ev.Seq, &ev.Type, &ev.Role, &ev.ParentEventID, &payload); err != nil {
+		return event.Event{}, err
+	}
+	ev.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
+	ev.PayloadJSON = []byte(payload)
+	return ev, nil
+}
+
+func touchSessionTx(tx *sql.Tx, sessionID string, ts time.Time) error {
+	if sessionID == "" || ts.IsZero() {
+		return nil
+	}
+	_, err := tx.Exec(
+		`UPDATE sessions
+		 SET updated_at = CASE
+		   WHEN updated_at > ? THEN updated_at
+		   ELSE ?
+		 END
+		 WHERE id = ?`,
+		ts.Format(time.RFC3339Nano),
+		ts.Format(time.RFC3339Nano),
+		sessionID,
+	)
+	return err
+}
+
+// HasSession reports whether a session exists.
+func (s *Store) HasSession(id string) (bool, error) {
+	_, err := s.GetSession(id)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return false, err
 }

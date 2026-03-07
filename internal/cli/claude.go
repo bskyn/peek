@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/bskyn/peek/internal/renderer"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/tailer"
+	"github.com/bskyn/peek/internal/viewer"
 )
 
 func newClaudeCmd() *cobra.Command {
@@ -40,6 +42,7 @@ func newClaudeCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&replay, "replay", false, "Replay the full session from the beginning, ignoring saved cursor")
+	addViewerFlags(cmd)
 
 	return cmd
 }
@@ -72,16 +75,24 @@ func runClaude(sessionID string, replay bool) error {
 		cancel()
 	}()
 
+	rt, err := viewer.Start(ctx, st, buildViewerOptions("claude-"+sf.SessionID), nil)
+	if err != nil {
+		return fmt.Errorf("start viewer: %w", err)
+	}
+	if rt != nil {
+		fmt.Printf("Viewer: %s\n\n", rt.InitialURL(buildViewerOptions("claude-"+sf.SessionID)))
+	}
+
 	// Set up renderer
 	rend := renderer.NewTerminalAuto()
 	rend.Source = "Claude"
 
 	// Always use follow mode — automatically switches to new sessions
-	return followSessions(ctx, st, rend, claudeDir, sf, replay)
+	return followSessions(ctx, st, rend, rt, claudeDir, sf, replay)
 }
 
 // followSessions tails the current session and automatically switches to new sessions.
-func followSessions(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, claudeDir string, sf *claude.SessionFile, replay bool) error {
+func followSessions(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, rt *viewer.Runtime, claudeDir string, sf *claude.SessionFile, replay bool) error {
 	for {
 		rend.RenderSessionBanner(sf.SessionID, sf.Path, sf.ProjectPath)
 
@@ -97,7 +108,7 @@ func followSessions(ctx context.Context, st *store.Store, rend *renderer.Termina
 		// Tail in background
 		tailDone := make(chan error, 1)
 		go func() {
-			tailDone <- tailSession(tailCtx, st, rend, sf, replay)
+			tailDone <- tailSession(tailCtx, st, rend, rt, claudeDir, sf, replay)
 		}()
 
 		// Wait for: new session detected, tail error, or parent context done
@@ -123,15 +134,20 @@ func followSessions(ctx context.Context, st *store.Store, rend *renderer.Termina
 }
 
 // tailSession tails a single session until the context is cancelled.
-func tailSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, sf *claude.SessionFile, replay bool) error {
+func tailSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, rt *viewer.Runtime, claudeDir string, sf *claude.SessionFile, replay bool) error {
 	// Create or look up our internal session
 	internalSessionID := "claude-" + sf.SessionID
-	_, err := st.GetSession(internalSessionID)
-	if err != nil {
-		sess := newSessionFromFile(sf, internalSessionID)
-		if err := st.CreateSession(sess); err != nil {
-			return fmt.Errorf("create session: %w", err)
-		}
+	if rt != nil {
+		rt.SetActiveSessionID(internalSessionID)
+	}
+	sess := newSessionFromFile(sf, internalSessionID)
+	if err := st.CreateSession(sess); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	publishSessionSummary(st, rt, internalSessionID)
+
+	if err := syncClaudeSubagents(st, rt, claudeDir, sf); err != nil {
+		return fmt.Errorf("sync subagents: %w", err)
 	}
 
 	// Load cursor for resume (unless --replay)
@@ -173,19 +189,19 @@ func tailSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRe
 				continue
 			}
 
-			allInserted := true
+			insertedEvents, err := st.AppendEvents(parsedEvents)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+				insertFailed.Store(true)
+				continue
+			}
+
 			for _, ev := range parsedEvents {
-				if err := st.InsertEvent(ev); err != nil {
-					fmt.Fprintf(os.Stderr, "store error: %v\n", err)
-					allInserted = false
-				}
 				rend.RenderEvent(ev)
 			}
 
-			if !allInserted {
-				insertFailed.Store(true)
-			}
-
+			publishSessionSummary(st, rt, internalSessionID)
+			publishInsertedEvents(rt, insertedEvents)
 			seq = nextSeq
 		}
 	}()
@@ -215,6 +231,78 @@ func tailSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRe
 	}
 
 	return err
+}
+
+func publishSessionSummary(st *store.Store, rt *viewer.Runtime, sessionID string) {
+	if rt == nil {
+		return
+	}
+	summary, err := st.GetSessionSummary(sessionID)
+	if err != nil {
+		return
+	}
+	rt.Broker().PublishSessionUpsert(summary)
+}
+
+func publishInsertedEvents(rt *viewer.Runtime, events []event.Event) {
+	if rt == nil {
+		return
+	}
+	for _, ev := range events {
+		rt.Broker().PublishEventAppend(ev)
+	}
+}
+
+func syncClaudeSubagents(st *store.Store, rt *viewer.Runtime, claudeDir string, parent *claude.SessionFile) error {
+	if strings.HasPrefix(parent.SessionID, "agent-") {
+		return nil
+	}
+
+	children, err := claude.DiscoverSubagents(claudeDir, parent)
+	if err != nil {
+		return nil
+	}
+
+	for _, child := range children {
+		internalID := "claude-" + child.SessionID
+		if err := st.CreateSession(child.ToSession(internalID)); err != nil {
+			return err
+		}
+		if err := importClaudeSessionFile(st, rt, &child); err != nil {
+			return err
+		}
+		publishSessionSummary(st, rt, internalID)
+	}
+
+	return nil
+}
+
+func importClaudeSessionFile(st *store.Store, rt *viewer.Runtime, sf *claude.SessionFile) error {
+	file, err := os.Open(sf.Path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	internalSessionID := "claude-" + sf.SessionID
+	var seq int64
+	for scanner.Scan() {
+		parsedEvents, nextSeq, err := claude.ParseLine(scanner.Text(), internalSessionID, seq)
+		if err != nil {
+			continue
+		}
+		insertedEvents, err := st.AppendEvents(parsedEvents)
+		if err != nil {
+			return err
+		}
+		publishInsertedEvents(rt, insertedEvents)
+		seq = nextSeq
+	}
+
+	return scanner.Err()
 }
 
 // watchForNewSession watches the same project directory for a new session JSONL file.

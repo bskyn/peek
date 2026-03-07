@@ -18,6 +18,7 @@ type SessionFile struct {
 	SessionID         string
 	ProjectPath       string
 	EncodedProjectKey string
+	ParentSessionID   string
 	ModTime           time.Time
 }
 
@@ -29,6 +30,7 @@ func (sf *SessionFile) ToSession(internalID string) event.Session {
 		Source:          "claude",
 		ProjectPath:     sf.ProjectPath,
 		SourceSessionID: sf.SessionID,
+		ParentSessionID: sf.ParentSessionID,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -56,19 +58,84 @@ func discoverByID(claudeDir string, sessionID string) (*SessionFile, error) {
 		}
 		candidate := filepath.Join(projectsDir, entry.Name(), sessionID+".jsonl")
 		info, err := os.Stat(candidate)
+		if err == nil {
+			return &SessionFile{
+				Path:              candidate,
+				SessionID:         sessionID,
+				EncodedProjectKey: entry.Name(),
+				ProjectPath:       decodeProjectKey(entry.Name()),
+				ModTime:           info.ModTime(),
+			}, nil
+		}
+
+		subagentCandidate := filepath.Join(projectsDir, entry.Name(), "subagents", sessionID+".jsonl")
+		info, err = os.Stat(subagentCandidate)
 		if err != nil {
 			continue
 		}
+
 		return &SessionFile{
-			Path:              candidate,
+			Path:              subagentCandidate,
 			SessionID:         sessionID,
 			EncodedProjectKey: entry.Name(),
 			ProjectPath:       decodeProjectKey(entry.Name()),
+			ParentSessionID:   latestRootSessionID(filepath.Join(projectsDir, entry.Name())),
 			ModTime:           info.ModTime(),
 		}, nil
 	}
 
 	return nil, fmt.Errorf("session %q not found in %s", sessionID, projectsDir)
+}
+
+// DiscoverSubagents finds Claude subagent session files for a root session.
+func DiscoverSubagents(claudeDir string, parent *SessionFile) ([]SessionFile, error) {
+	if parent == nil {
+		return nil, fmt.Errorf("parent session is required")
+	}
+
+	projectDir := filepath.Join(claudeDir, "projects", parent.EncodedProjectKey)
+	patterns := []string{
+		filepath.Join(projectDir, "subagents", "agent-*.jsonl"),
+		filepath.Join(projectDir, "agent-*.jsonl"),
+	}
+
+	files := make([]SessionFile, 0)
+	seen := make(map[string]struct{})
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, match := range matches {
+			if _, ok := seen[match]; ok {
+				continue
+			}
+			seen[match] = struct{}{}
+
+			info, err := os.Stat(match)
+			if err != nil {
+				continue
+			}
+
+			files = append(files, SessionFile{
+				Path:              match,
+				SessionID:         strings.TrimSuffix(filepath.Base(match), ".jsonl"),
+				ProjectPath:       parent.ProjectPath,
+				EncodedProjectKey: parent.EncodedProjectKey,
+				ParentSessionID:   parent.SessionID,
+				ModTime:           info.ModTime(),
+			})
+		}
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].ModTime.Equal(files[j].ModTime) {
+			return files[i].SessionID < files[j].SessionID
+		}
+		return files[i].ModTime.Before(files[j].ModTime)
+	})
+
+	return files, nil
 }
 
 func discoverLatest(claudeDir string) (*SessionFile, error) {
@@ -185,4 +252,29 @@ func decodeProjectKey(key string) string {
 		decoded = "/" + decoded
 	}
 	return decoded
+}
+
+func latestRootSessionID(projectDir string) string {
+	matches, err := filepath.Glob(filepath.Join(projectDir, "*.jsonl"))
+	if err != nil {
+		return ""
+	}
+
+	var latestID string
+	var latestTime time.Time
+	for _, match := range matches {
+		base := filepath.Base(match)
+		if strings.HasPrefix(base, "agent-") {
+			continue
+		}
+		info, err := os.Stat(match)
+		if err != nil {
+			continue
+		}
+		if latestID == "" || info.ModTime().After(latestTime) {
+			latestID = strings.TrimSuffix(base, ".jsonl")
+			latestTime = info.ModTime()
+		}
+	}
+	return latestID
 }
