@@ -33,10 +33,10 @@ endif
 build: web-build
 	go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/peek
 
-test:
+test: web-build
 	go test -race ./...
 
-lint: $(GOLANGCI_LINT)
+lint: web-build $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./cmd/... ./internal/...
 
 lint-install: $(GOLANGCI_LINT)
