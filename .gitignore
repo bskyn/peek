@@ -1,5 +1,6 @@
 # Binaries
 bin/
+peek
 dist/
 *.exe
 *.dll
@@ -41,6 +42,9 @@ Thumbs.db
 # npm
 npm/node_modules/
 npm/bin/
+web/node_modules/
+.gocache/
+.gopath/
 
 # GoReleaser
 dist/

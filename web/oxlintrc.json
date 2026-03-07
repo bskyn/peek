@@ -1,0 +1,23 @@
+{
+  "plugins": ["react", "typescript", "import", "unicorn"],
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/no-children-prop": "error",
+    "react/no-danger-with-children": "error",
+    "react/no-direct-mutation-state": "error",
+    "react/no-find-dom-node": "error",
+    "react/no-render-return-value": "error",
+    "react/no-string-refs": "error",
+    "react/no-unescaped-entities": "error",
+    "react/require-render-return": "error",
+    "react/jsx-key": "error",
+    "react/jsx-no-comment-textnodes": "error",
+    "react/jsx-no-duplicate-props": "error",
+    "react/jsx-no-target-blank": "error",
+    "react/jsx-no-undef": "error",
+    "import/no-duplicates": "error",
+    "unicorn/no-instanceof-array": "error",
+    "no-unused-vars": "warn",
+    "no-console": "warn"
+  }
+}

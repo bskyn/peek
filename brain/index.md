@@ -24,6 +24,7 @@
 - [[claude-jsonl-format]] — Claude Code session JSONL file format reference
 - [[codex-jsonl-format]] — Codex CLI rollout JSONL file format reference
 - [[session-follow-mode]] — follow-mode watcher design and gotchas
+- [[web-ui]] — web UI stack, structure, diff rendering, theme
 - [[gotchas]] — payload truncation, cross-boundary contracts, cursor safety, LCS scaling
 
 ## Plans

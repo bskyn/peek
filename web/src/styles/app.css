@@ -1,0 +1,156 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "Consolas", monospace;
+
+  /* Catppuccin Mocha */
+  --color-base: #1e1e2e;
+  --color-mantle: #181825;
+  --color-crust: #11111b;
+  --color-surface-0: #313244;
+  --color-surface-1: #45475a;
+  --color-surface-2: #585b70;
+  --color-overlay-0: #6c7086;
+  --color-overlay-1: #7f849c;
+  --color-overlay-2: #9399b2;
+  --color-text: #cdd6f4;
+  --color-subtext-0: #a6adc8;
+  --color-subtext-1: #bac2de;
+  --color-lavender: #b4befe;
+  --color-blue: #89b4fa;
+  --color-sapphire: #74c7ec;
+  --color-sky: #89dceb;
+  --color-teal: #94e2d5;
+  --color-green: #a6e3a1;
+  --color-yellow: #f9e2af;
+  --color-peach: #fab387;
+  --color-maroon: #eba0ac;
+  --color-red: #f38ba8;
+  --color-mauve: #cba6f7;
+  --color-pink: #f5c2e7;
+  --color-flamingo: #f2cdcd;
+  --color-rosewater: #f5e0dc;
+
+  /* Semantic aliases */
+  --color-border: #313244;
+  --color-border-subtle: rgba(49, 50, 68, 0.6);
+  --color-accent: #a6e3a1;
+  --color-accent-muted: rgba(166, 227, 161, 0.1);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-text);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-1);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-overlay-0);
+}
+
+@keyframes pulse-live {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.animate-pulse-live {
+  animation: pulse-live 2s ease-in-out infinite;
+}
+
+/* react-diff-view overrides for catppuccin */
+.diff-unified {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.diff-unified .diff-gutter {
+  width: 40px;
+  color: var(--color-overlay-0);
+  background: var(--color-crust);
+  text-align: right;
+  padding-right: 8px;
+  user-select: none;
+}
+
+.diff-unified .diff-code {
+  background: var(--color-mantle);
+  color: var(--color-subtext-1);
+  padding-left: 12px;
+  white-space: pre-wrap;
+  tab-size: 2;
+}
+
+.diff-unified .diff-code-insert {
+  background: rgba(166, 227, 161, 0.08);
+  color: var(--color-green);
+}
+
+.diff-unified .diff-code-delete {
+  background: rgba(243, 139, 168, 0.08);
+  color: var(--color-red);
+}
+
+.diff-unified .diff-gutter-insert {
+  background: rgba(166, 227, 161, 0.12);
+  color: var(--color-green);
+}
+
+.diff-unified .diff-gutter-delete {
+  background: rgba(243, 139, 168, 0.12);
+  color: var(--color-red);
+}
+
+.raw-diff {
+  font-family: var(--font-mono);
+}
+
+.raw-diff-line {
+  display: block;
+  padding: 0 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.raw-diff-line-context {
+  color: var(--color-subtext-0);
+}
+
+.raw-diff-line-insert {
+  background: rgba(166, 227, 161, 0.08);
+  color: var(--color-green);
+}
+
+.raw-diff-line-delete {
+  background: rgba(243, 139, 168, 0.08);
+  color: var(--color-red);
+}
+
+.raw-diff-line-hunk {
+  background: rgba(203, 166, 247, 0.08);
+  color: var(--color-mauve);
+}

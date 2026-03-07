@@ -24,6 +24,14 @@ Codex emits user and assistant messages in **two** line types: `event_msg` (`use
 
 Codex stores sessions in `sessions/YYYY/MM/DD/` date directories. A new day creates a new directory that didn't exist when the watcher started. The watcher must dynamically add new directories to fsnotify when `Create` events fire on directories, not just files.
 
+## react-diff-view parseDiff
+
+`createTwoFilesPatch` from the `diff` library produces a format that `react-diff-view`'s `parseDiff` cannot handle — it crashes reading `.changes` on undefined. Use `structuredPatch` instead and manually build the unified diff string with proper `--- a` / `+++ b` / `@@ -x,y +x,y @@` headers. Always wrap `parseDiff` in try/catch as a safety net.
+
+## Codex apply_patch Payload Shape
+
+Codex `apply_patch` tool calls are split by the Go parser into per-file events with `file_path`, `operation`, and `diff` fields directly on `payload_json` (not nested under `input`). This differs from Claude's Edit/Write which store `old_string`/`new_string` under `payload_json.input`. Web UI diff rendering must handle both paths.
+
 ## macOS sed
 
 - `sed -i ''` (empty string for backup suffix) is required on macOS

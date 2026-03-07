@@ -11,6 +11,8 @@ internal/event/                 — canonical event model (8 types) + payload ex
 internal/store/                 — SQLite persistence (sessions, events, cursors)
 internal/tailer/                — cursor-based JSONL file tailing (fsnotify + poll)
 internal/renderer/              — terminal output with ANSI colors + diff rendering
+internal/viewer/                — embedded web UI (Vite build output in dist/)
+web/                            — React web UI source (see [[web-ui]])
 ```
 
 ## CLI Pattern

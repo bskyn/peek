@@ -5,6 +5,8 @@ GOBIN ?= $(CURDIR)/bin
 GOLANGCI_LINT_VERSION := v1.64.8
 GOLANGCI_LINT := $(GOBIN)/golangci-lint
 GOLANGCI_LINT_VERSION_STRIPPED := $(patsubst v%,%,$(GOLANGCI_LINT_VERSION))
+WEB_DIR := web
+WEB_HAS_BUN := $(shell command -v bun >/dev/null 2>&1 && echo 1 || echo 0)
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
@@ -26,9 +28,9 @@ else
 $(error unsupported ARCH $(UNAME_M) for golangci-lint install)
 endif
 
-.PHONY: build test lint lint-install run clean release-dry-run
+.PHONY: build test lint lint-install run clean release-dry-run web-install web-build
 
-build:
+build: web-build
 	go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/peek
 
 test:
@@ -38,6 +40,20 @@ lint: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./cmd/... ./internal/...
 
 lint-install: $(GOLANGCI_LINT)
+
+web-install:
+ifeq ($(WEB_HAS_BUN),1)
+	cd $(WEB_DIR) && bun install
+else
+	npm --prefix $(WEB_DIR) install
+endif
+
+web-build:
+ifeq ($(WEB_HAS_BUN),1)
+	cd $(WEB_DIR) && bun run build
+else
+	npm --prefix $(WEB_DIR) run build
+endif
 
 $(GOLANGCI_LINT):
 	@mkdir -p $(GOBIN)
