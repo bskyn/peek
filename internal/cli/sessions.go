@@ -20,6 +20,7 @@ func newSessionsCmd() *cobra.Command {
 
 	cmd.AddCommand(newSessionsListCmd())
 	cmd.AddCommand(newSessionsDeleteCmd())
+	cmd.AddCommand(newSessionsLoadCmd())
 	return cmd
 }
 

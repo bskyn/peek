@@ -43,6 +43,7 @@ func newClaudeCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&replay, "replay", false, "Replay the full session from the beginning, ignoring saved cursor")
 	addViewerFlags(cmd)
+	cmd.AddCommand(newClaudeLoadCmd())
 
 	return cmd
 }
@@ -272,7 +273,7 @@ func syncClaudeSubagents(st *store.Store, rt *viewer.Runtime, claudeDir string, 
 		if err := st.CreateSession(child.ToSession(internalID)); err != nil {
 			return err
 		}
-		if err := importClaudeSessionFile(st, rt, &child); err != nil {
+		if _, err := importClaudeSessionFile(st, rt, &child, false); err != nil {
 			return err
 		}
 		publishSessionSummary(st, rt, internalID)
@@ -281,10 +282,10 @@ func syncClaudeSubagents(st *store.Store, rt *viewer.Runtime, claudeDir string, 
 	return nil
 }
 
-func importClaudeSessionFile(st *store.Store, rt *viewer.Runtime, sf *claude.SessionFile) error {
+func importClaudeSessionFile(st *store.Store, rt *viewer.Runtime, sf *claude.SessionFile, replay bool) (int, error) {
 	file, err := os.Open(sf.Path)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer file.Close()
 
@@ -293,7 +294,8 @@ func importClaudeSessionFile(st *store.Store, rt *viewer.Runtime, sf *claude.Ses
 
 	internalSessionID := "claude-" + sf.SessionID
 	var seq int64
-	annotator := newUsageAnnotator(st, internalSessionID, false)
+	annotator := newUsageAnnotator(st, internalSessionID, replay)
+	insertedCount := 0
 	for scanner.Scan() {
 		parsedEvents, nextSeq, err := claude.ParseLine(scanner.Text(), internalSessionID, seq)
 		if err != nil {
@@ -302,13 +304,30 @@ func importClaudeSessionFile(st *store.Store, rt *viewer.Runtime, sf *claude.Ses
 		parsedEvents = annotator.Annotate(parsedEvents)
 		insertedEvents, err := st.AppendEvents(parsedEvents)
 		if err != nil {
-			return err
+			return insertedCount, err
 		}
 		publishInsertedEvents(rt, insertedEvents)
+		insertedCount += len(insertedEvents)
 		seq = nextSeq
 	}
 
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return insertedCount, err
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		return insertedCount, err
+	}
+	if err := st.SaveCursor(store.Cursor{
+		Path:       sf.Path,
+		ByteOffset: info.Size(),
+		SessionID:  internalSessionID,
+	}); err != nil {
+		return insertedCount, err
+	}
+
+	return insertedCount, nil
 }
 
 // watchForNewSession watches the same project directory for a new session JSONL file.

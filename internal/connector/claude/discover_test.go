@@ -138,3 +138,51 @@ func TestDiscoverSkipsAgentFiles(t *testing.T) {
 		t.Fatal("expected error when only agent files exist")
 	}
 }
+
+func TestDiscoverAllOrdersRootsBeforeSubagents(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "projects", "proj1")
+	subagentsDir := filepath.Join(projectDir, "subagents")
+	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rootA := filepath.Join(projectDir, "root-a.jsonl")
+	if err := os.WriteFile(rootA, []byte(`{"type":"user"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	childA := filepath.Join(subagentsDir, "agent-child-a.jsonl")
+	if err := os.WriteFile(childA, []byte(`{"type":"user"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	rootB := filepath.Join(projectDir, "root-b.jsonl")
+	if err := os.WriteFile(rootB, []byte(`{"type":"user"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := DiscoverAll(dir)
+	if err != nil {
+		t.Fatalf("DiscoverAll: %v", err)
+	}
+
+	if len(files) != 3 {
+		t.Fatalf("expected 3 session files, got %d", len(files))
+	}
+
+	if files[0].SessionID != "root-a" {
+		t.Fatalf("expected first session root-a, got %s", files[0].SessionID)
+	}
+	if files[1].SessionID != "agent-child-a" {
+		t.Fatalf("expected second session agent-child-a, got %s", files[1].SessionID)
+	}
+	if files[1].ParentSessionID != "root-a" {
+		t.Fatalf("expected child parent root-a, got %s", files[1].ParentSessionID)
+	}
+	if files[2].SessionID != "root-b" {
+		t.Fatalf("expected third session root-b, got %s", files[2].SessionID)
+	}
+}

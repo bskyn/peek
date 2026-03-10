@@ -43,6 +43,7 @@ func newCodexCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&replay, "replay", false, "Replay the full session from the beginning, ignoring saved cursor")
 	addViewerFlags(cmd)
+	cmd.AddCommand(newCodexLoadCmd())
 
 	return cmd
 }

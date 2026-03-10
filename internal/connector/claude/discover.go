@@ -45,6 +45,75 @@ func Discover(claudeDir string, sessionID string) (*SessionFile, error) {
 	return discoverLatest(claudeDir)
 }
 
+// DiscoverAll finds all Claude session files in deterministic import order.
+// Root sessions are returned before their subagents.
+func DiscoverAll(claudeDir string) ([]SessionFile, error) {
+	projectsDir := filepath.Join(claudeDir, "projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read projects dir: %w", err)
+	}
+
+	rootFiles := make([]SessionFile, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		projectDir := filepath.Join(projectsDir, entry.Name())
+		matches, err := filepath.Glob(filepath.Join(projectDir, "*.jsonl"))
+		if err != nil {
+			continue
+		}
+
+		for _, match := range matches {
+			base := filepath.Base(match)
+			if strings.HasPrefix(base, "agent-") {
+				continue
+			}
+
+			info, err := os.Stat(match)
+			if err != nil {
+				continue
+			}
+
+			rootFiles = append(rootFiles, SessionFile{
+				Path:              match,
+				SessionID:         strings.TrimSuffix(base, ".jsonl"),
+				ProjectPath:       decodeProjectKey(entry.Name()),
+				EncodedProjectKey: entry.Name(),
+				ModTime:           info.ModTime(),
+			})
+		}
+	}
+
+	if len(rootFiles) == 0 {
+		return nil, fmt.Errorf("no Claude sessions found in %s", projectsDir)
+	}
+
+	sortSessionFiles(rootFiles)
+
+	files := make([]SessionFile, 0, len(rootFiles))
+	seenChildren := make(map[string]struct{})
+	for _, root := range rootFiles {
+		files = append(files, root)
+
+		children, err := DiscoverSubagents(claudeDir, &root)
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			if _, ok := seenChildren[child.Path]; ok {
+				continue
+			}
+			seenChildren[child.Path] = struct{}{}
+			files = append(files, child)
+		}
+	}
+
+	return files, nil
+}
+
 func discoverByID(claudeDir string, sessionID string) (*SessionFile, error) {
 	projectsDir := filepath.Join(claudeDir, "projects")
 	entries, err := os.ReadDir(projectsDir)
@@ -235,10 +304,28 @@ func discoverByMtime(claudeDir string) (*SessionFile, error) {
 	}
 
 	sort.Slice(files, func(i, j int) bool {
+		if files[i].ModTime.Equal(files[j].ModTime) {
+			if files[i].SessionID == files[j].SessionID {
+				return files[i].Path < files[j].Path
+			}
+			return files[i].SessionID < files[j].SessionID
+		}
 		return files[i].ModTime.After(files[j].ModTime)
 	})
 
 	return &files[0], nil
+}
+
+func sortSessionFiles(files []SessionFile) {
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].ModTime.Equal(files[j].ModTime) {
+			if files[i].SessionID == files[j].SessionID {
+				return files[i].Path < files[j].Path
+			}
+			return files[i].SessionID < files[j].SessionID
+		}
+		return files[i].ModTime.Before(files[j].ModTime)
+	})
 }
 
 // decodeProjectKey converts Claude's encoded project folder name back to a path.

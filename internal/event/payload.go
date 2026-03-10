@@ -131,10 +131,10 @@ func PayloadTokenCountUsage(payload json.RawMessage) (Usage, bool) {
 		nonCached = 0
 	}
 	usage := Usage{
-		InputTokens:    nonCached,
-		OutputTokens:   raw.OutputTokens,
+		InputTokens:     nonCached,
+		OutputTokens:    raw.OutputTokens,
 		CacheReadTokens: raw.CachedInputTokens,
-		TotalTokens:    raw.TotalTokens,
+		TotalTokens:     raw.TotalTokens,
 	}
 	usage = usage.Normalized()
 	if !usage.HasTokens() {

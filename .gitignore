@@ -44,6 +44,7 @@ npm/node_modules/
 npm/bin/
 web/node_modules/
 .gocache/
+.gomodcache/
 .gopath/
 
 # GoReleaser

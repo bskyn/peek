@@ -38,6 +38,9 @@ peek claude
 # Monitor a specific session by ID
 peek claude 75c5194d-ea16-4b91-99cf-3d321d111a51
 
+# Reload every Claude session from disk
+peek claude load --all
+
 # Disable the web viewer and keep terminal output only
 peek claude --no-web
 
@@ -80,6 +83,9 @@ peek codex
 # Monitor a specific session by UUID
 peek codex 019cc0a5-6911-7123-b2ff-a4848ccd6e79
 
+# Reload every Codex session from disk
+peek codex load --all
+
 # Replay from the beginning
 peek codex --replay
 
@@ -105,6 +111,9 @@ peek sessions delete aa961bad-c727-4479-ac42-8d1db8bdf261
 
 # Delete all sessions
 peek sessions delete --all
+
+# Reload all Claude and Codex sessions from disk
+peek sessions load --all
 ```
 
 ### Replay a session from the beginning
@@ -151,7 +160,7 @@ make build
 # Run tests
 make test
 
-# Lint (requires golangci-lint on PATH)
+# Lint (installs the pinned golangci-lint version into ./bin if needed)
 make lint
 
 # Run from source

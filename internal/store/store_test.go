@@ -457,3 +457,90 @@ func TestDeleteAllSessionsClearsStore(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteSessionsBySourceClearsOnlyMatchingSource(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	for _, sess := range []event.Session{
+		{
+			ID:              "claude-parent",
+			Source:          "claude",
+			SourceSessionID: "raw-claude-parent",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+		{
+			ID:              "claude-child",
+			Source:          "claude",
+			SourceSessionID: "raw-claude-child",
+			ParentSessionID: "claude-parent",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+		{
+			ID:              "codex-keep",
+			Source:          "codex",
+			SourceSessionID: "raw-codex",
+			ParentSessionID: "claude-parent",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+	} {
+		if err := s.CreateSession(sess); err != nil {
+			t.Fatalf("create session %s: %v", sess.ID, err)
+		}
+		if err := s.InsertEvent(event.Event{
+			ID:          sess.ID + "-event",
+			SessionID:   sess.ID,
+			Timestamp:   now,
+			Seq:         0,
+			Type:        event.EventAssistantMessage,
+			PayloadJSON: json.RawMessage(`{}`),
+		}); err != nil {
+			t.Fatalf("insert event for %s: %v", sess.ID, err)
+		}
+		if err := s.SaveCursor(Cursor{
+			Path:       "/tmp/" + sess.ID + ".jsonl",
+			ByteOffset: 1,
+			SessionID:  sess.ID,
+		}); err != nil {
+			t.Fatalf("save cursor for %s: %v", sess.ID, err)
+		}
+	}
+
+	deleted, err := s.DeleteSessionsBySource("claude")
+	if err != nil {
+		t.Fatalf("DeleteSessionsBySource: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("DeleteSessionsBySource deleted %d sessions, want 2", deleted)
+	}
+
+	if _, err := s.GetSession("claude-parent"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected deleted Claude parent to be gone, got %v", err)
+	}
+	if _, err := s.GetSession("claude-child"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected deleted Claude child to be gone, got %v", err)
+	}
+
+	kept, err := s.GetSession("codex-keep")
+	if err != nil {
+		t.Fatalf("GetSession(codex-keep): %v", err)
+	}
+	if kept.ParentSessionID != "" {
+		t.Fatalf("expected surviving session parent to be cleared, got %q", kept.ParentSessionID)
+	}
+
+	events, err := s.GetEvents("codex-keep")
+	if err != nil {
+		t.Fatalf("GetEvents(codex-keep): %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected surviving Codex events to remain, got %d", len(events))
+	}
+
+	if _, err := s.GetCursor("/tmp/codex-keep.jsonl"); err != nil {
+		t.Fatalf("expected surviving Codex cursor to remain, got %v", err)
+	}
+}

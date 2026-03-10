@@ -109,8 +109,8 @@ func TestEstimateGPT52Pricing(t *testing.T) {
 
 func TestEstimateO3Pricing(t *testing.T) {
 	usage := Estimate("o3", event.Usage{
-		InputTokens:    1000,
-		OutputTokens:   200,
+		InputTokens:     1000,
+		OutputTokens:    200,
 		CacheReadTokens: 500,
 	})
 	if usage.PricingModel != "o3" {
@@ -283,8 +283,8 @@ func TestAnnotateCodexCachedTokenDelta(t *testing.T) {
 func TestEstimateGPT5CachePricing(t *testing.T) {
 	// Simulate normalized Codex usage: InputTokens is non-cached, CacheReadTokens is cached
 	usage := Estimate("gpt-5", event.Usage{
-		InputTokens:    12492,
-		OutputTokens:   319,
+		InputTokens:     12492,
+		OutputTokens:    319,
 		CacheReadTokens: 6528,
 	})
 	if usage.PricingModel != "gpt-5" {

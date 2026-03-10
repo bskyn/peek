@@ -537,6 +537,41 @@ func (s *Store) DeleteAllSessions() (int64, error) {
 	return count, nil
 }
 
+// DeleteSessionsBySource removes all stored sessions, events, and cursors for one source.
+func (s *Store) DeleteSessionsBySource(source string) (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	var count int64
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE source = ?`, source).Scan(&count); err != nil {
+		return 0, err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM cursors WHERE session_id IN (SELECT id FROM sessions WHERE source = ?)`, source); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM events WHERE session_id IN (SELECT id FROM sessions WHERE source = ?)`, source); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN (SELECT id FROM sessions WHERE source = ?)`, source); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE source = ?`, source); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
 func nilIfEmpty(s string) interface{} {
 	if s == "" {
 		return nil

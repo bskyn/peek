@@ -43,6 +43,53 @@ func Discover(codexDir string, sessionID string) (*SessionFile, error) {
 	return discoverLatest(codexDir)
 }
 
+// DiscoverAll finds all Codex rollout files in deterministic import order.
+func DiscoverAll(codexDir string) ([]SessionFile, error) {
+	sessionsDir := filepath.Join(codexDir, "sessions")
+	files := make([]SessionFile, 0)
+
+	err := filepath.Walk(sessionsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		base := filepath.Base(path)
+		if !strings.HasPrefix(base, "rollout-") || !strings.HasSuffix(base, ".jsonl") {
+			return nil
+		}
+
+		files = append(files, SessionFile{
+			Path:        path,
+			SessionID:   ExtractUUID(base),
+			ProjectPath: ReadCWDFromMeta(path),
+			ModTime:     info.ModTime(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk sessions dir: %w", err)
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no Codex sessions found in %s", sessionsDir)
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].ModTime.Equal(files[j].ModTime) {
+			if files[i].SessionID == files[j].SessionID {
+				return files[i].Path < files[j].Path
+			}
+			return files[i].SessionID < files[j].SessionID
+		}
+		return files[i].ModTime.Before(files[j].ModTime)
+	})
+
+	return files, nil
+}
+
 func discoverByID(codexDir string, sessionID string) (*SessionFile, error) {
 	sessionsDir := filepath.Join(codexDir, "sessions")
 	var found *SessionFile

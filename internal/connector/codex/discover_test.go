@@ -129,3 +129,39 @@ func TestToSession(t *testing.T) {
 		t.Errorf("expected id codex-abc-def, got %s", sess.ID)
 	}
 }
+
+func TestDiscoverAllOrdersByMtime(t *testing.T) {
+	dir := t.TempDir()
+	sessDir := filepath.Join(dir, "sessions", "2026", "03", "05")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath := filepath.Join(sessDir, "rollout-2026-03-05T10-00-00-old-uuid.jsonl")
+	oldMeta := `{"timestamp":"2026-03-05T10:00:00Z","type":"session_meta","payload":{"id":"old-uuid","cwd":"/projects/old"}}` + "\n"
+	if err := os.WriteFile(oldPath, []byte(oldMeta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	newPath := filepath.Join(sessDir, "rollout-2026-03-05T11-00-00-new-uuid.jsonl")
+	newMeta := `{"timestamp":"2026-03-05T11:00:00Z","type":"session_meta","payload":{"id":"new-uuid","cwd":"/projects/new"}}` + "\n"
+	if err := os.WriteFile(newPath, []byte(newMeta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := DiscoverAll(dir)
+	if err != nil {
+		t.Fatalf("DiscoverAll: %v", err)
+	}
+
+	if len(files) != 2 {
+		t.Fatalf("expected 2 session files, got %d", len(files))
+	}
+	if files[0].SessionID != "old-uuid" {
+		t.Fatalf("expected first session old-uuid, got %s", files[0].SessionID)
+	}
+	if files[1].SessionID != "new-uuid" {
+		t.Fatalf("expected second session new-uuid, got %s", files[1].SessionID)
+	}
+}
