@@ -10,7 +10,7 @@ export function CostSidebar({ events }: { events: ViewerEvent[] }) {
         <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-overlay-0">
           Dashboard
         </p>
-        <h2 className="text-[13px] font-semibold text-text">Session cost</h2>
+        <h2 className="text-[13px] font-semibold text-text">Session Cost</h2>
       </div>
 
       {usage.totalTokens === 0 && usage.totalCostUSD === 0 ? (
@@ -19,7 +19,7 @@ export function CostSidebar({ events }: { events: ViewerEvent[] }) {
         <div className="flex flex-col gap-3">
           <div className="rounded-md border border-surface-0 bg-mantle p-2.5">
             <p className="text-[10px] font-medium uppercase tracking-wider text-overlay-0">
-              Total cost
+              Total Cost
             </p>
             <p className="mt-1 font-mono text-[18px] font-semibold text-green">
               {formatUSD(usage.totalCostUSD)}
@@ -27,17 +27,21 @@ export function CostSidebar({ events }: { events: ViewerEvent[] }) {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <p className="text-[10px] font-medium uppercase tracking-wider text-overlay-0">
-              Tokens
+            <p className="text-[10px] font-medium uppercase tracking-wider text-yellow">
+              Token Count
             </p>
             <StatRow label="Input" value={formatTokenCount(usage.inputTokens)} />
             <StatRow label="Output" value={formatTokenCount(usage.outputTokens)} />
-            <StatRow label="Total" value={formatTokenCount(usage.totalTokens)} />
+            <StatRow
+              label="Total"
+              value={formatTokenCount(usage.totalTokens)}
+              valueClass="text-yellow font-semibold"
+            />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <p className="text-[10px] font-medium uppercase tracking-wider text-overlay-0">
-              Cost breakdown
+            <p className="text-[10px] font-medium uppercase tracking-wider text-green">
+              Cost Breakdown
             </p>
             <StatRow label="Input" value={formatUSD(usage.inputCostUSD)} />
             <StatRow label="Output" value={formatUSD(usage.outputCostUSD)} />
@@ -48,11 +52,21 @@ export function CostSidebar({ events }: { events: ViewerEvent[] }) {
   );
 }
 
-function StatRow({ label, value }: { label: string; value: string }) {
+function StatRow({
+  label,
+  value,
+  valueClass,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+}) {
   return (
     <div className="flex items-center justify-between">
       <span className="text-[11px] text-overlay-0">{label}</span>
-      <span className="font-mono text-[11px] tabular-nums text-text">{value}</span>
+      <span className={`font-mono text-[11px] tabular-nums ${valueClass ?? "text-text"}`}>
+        {value}
+      </span>
     </div>
   );
 }

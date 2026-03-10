@@ -219,6 +219,14 @@ func (r *TerminalRenderer) headerLabel(base string, payload []byte) string {
 		return base
 	}
 
+	if r.color {
+		parts := []string{fmt.Sprintf("%stoken count: %s%s", yellow, formatTokenCount(usage.TotalTokens), reset)}
+		if usage.TotalCostUSD > 0 {
+			parts = append(parts, fmt.Sprintf("%scost %s%s", green, formatUSD(usage.TotalCostUSD), reset))
+		}
+		return fmt.Sprintf("%s (%s)", base, strings.Join(parts, " | "))
+	}
+
 	parts := []string{fmt.Sprintf("token count: %s", formatTokenCount(usage.TotalTokens))}
 	if usage.TotalCostUSD > 0 {
 		parts = append(parts, fmt.Sprintf("cost %s", formatUSD(usage.TotalCostUSD)))

@@ -63,15 +63,19 @@ export function extraPayload(event: ViewerEvent): string {
   return prettyJSON(payload);
 }
 
-export function usageSummary(event: ViewerEvent): string {
-  const usage = usageValue(event.payload_json.usage);
-  if (usage == null) return "";
+export type UsageParts = {
+  tokenCount: string;
+  cost: string | null;
+};
 
-  const parts = [`token count: ${formatTokenCount(usage.total_tokens)}`];
-  if (usage.total_cost_usd > 0) {
-    parts.push(`cost ${formatUSD(usage.total_cost_usd)}`);
-  }
-  return parts.join(" | ");
+export function usageSummary(event: ViewerEvent): UsageParts | null {
+  const usage = usageValue(event.payload_json.usage);
+  if (usage == null) return null;
+
+  return {
+    tokenCount: formatTokenCount(usage.total_tokens),
+    cost: usage.total_cost_usd > 0 ? formatUSD(usage.total_cost_usd) : null,
+  };
 }
 
 export function formatDateTime(raw: string): string {

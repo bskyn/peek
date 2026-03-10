@@ -135,9 +135,21 @@ export function TimelineCard({ event }: { event: ViewerEvent }) {
           <span className="font-mono text-[11px]">#{event.seq}</span>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-[10px] tabular-nums text-overlay-0">
-          {usage !== "" ? (
+          {usage != null ? (
             <>
-              <span className="text-right">{usage}</span>
+              <span className="text-yellow">
+                Token Count: <span className="font-semibold">{usage.tokenCount}</span>
+              </span>
+              {usage.cost != null ? (
+                <>
+                  <span aria-hidden="true" className="text-overlay-1">
+                    |
+                  </span>
+                  <span className="text-green">
+                    Cost: <span className="font-semibold">{usage.cost}</span>
+                  </span>
+                </>
+              ) : null}
               <span aria-hidden="true" className="text-overlay-1">
                 |
               </span>

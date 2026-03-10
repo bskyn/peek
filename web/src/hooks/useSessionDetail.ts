@@ -49,6 +49,13 @@ export function useSessionDetail(selectedSessionID: string) {
       return;
     }
 
+    // Clear stale data from previous session immediately
+    setDetail(null);
+    setEvents([]);
+    setHasMore(false);
+    setTotalCount(0);
+    setError("");
+
     let cancelled = false;
     setIsLoading(true);
 
