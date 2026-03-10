@@ -1,14 +1,14 @@
 {
   "name": "peek-web",
-  "private": true,
   "version": "0.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "build": "vite build",
     "dev": "vite",
     "lint": "oxlint",
-    "lint:format": "oxfmt --check src/",
-    "format": "oxfmt --write src/",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
