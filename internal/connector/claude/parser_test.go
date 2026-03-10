@@ -34,7 +34,7 @@ func TestParseUserMessage(t *testing.T) {
 }
 
 func TestParseAssistantWithThinkingAndText(t *testing.T) {
-	line := `{"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"2026-03-05T14:32:06.000Z","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"thinking","thinking":"let me reason about this"},{"type":"text","text":"Here is my answer."}]}}`
+	line := `{"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"2026-03-05T14:32:06.000Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1200,"output_tokens":300},"content":[{"type":"thinking","thinking":"let me reason about this"},{"type":"text","text":"Here is my answer."}]}}`
 
 	events, nextSeq, err := ParseLine(line, "s1", 0)
 	if err != nil {
@@ -59,6 +59,13 @@ func TestParseAssistantWithThinkingAndText(t *testing.T) {
 	text := ev.PayloadText(events[1].PayloadJSON)
 	if text != "Here is my answer." {
 		t.Errorf("unexpected text: %s", text)
+	}
+	usage, ok := ev.PayloadUsage(events[1].PayloadJSON)
+	if !ok {
+		t.Fatal("expected assistant message usage")
+	}
+	if usage.InputTokens != 1200 || usage.OutputTokens != 300 || usage.TotalTokens != 1500 {
+		t.Fatalf("unexpected usage: %+v", usage)
 	}
 
 	if nextSeq != 2 {

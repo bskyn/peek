@@ -116,6 +116,19 @@ func TestRenderTruncatesLongOutput(t *testing.T) {
 	}
 }
 
+func TestRenderUsageMetadataInHeader(t *testing.T) {
+	out := renderToString(makeEvent(event.EventToolResult, map[string]interface{}{
+		"text": "ok",
+		"usage": map[string]interface{}{
+			"total_tokens":   1500,
+			"total_cost_usd": 0.0315,
+		},
+	}))
+	if !strings.Contains(out, "Result (token count: 1,500 | cost $0.0315)") {
+		t.Fatalf("expected usage metadata in header: %s", out)
+	}
+}
+
 func TestRenderSequentialNumbering(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewTerminal(&buf, false)

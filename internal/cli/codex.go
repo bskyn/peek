@@ -86,10 +86,12 @@ func runCodex(sessionID string, replay bool) error {
 	// Disable follow-mode when a specific session ID was provided
 	if sessionID != "" {
 		rend.RenderSessionBanner(sf.SessionID, sf.Path, sf.ProjectPath)
-		return tailCodexSession(ctx, st, rend, rt, sf, replay)
+		err = tailCodexSession(ctx, st, rend, rt, sf, replay)
+	} else {
+		err = followCodexSessions(ctx, st, rend, rt, codexDir, sf, replay)
 	}
-
-	return followCodexSessions(ctx, st, rend, rt, codexDir, sf, replay)
+	rend.RenderUsageSummary()
+	return err
 }
 
 func followCodexSessions(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, rt *viewer.Runtime, codexDir string, sf *codex.SessionFile, replay bool) error {
@@ -158,6 +160,7 @@ func tailCodexSession(ctx context.Context, st *store.Store, rend *renderer.Termi
 			seq = maxSeq + 1
 		}
 	}
+	annotator := newUsageAnnotator(st, internalSessionID, replay)
 
 	var wg sync.WaitGroup
 	var insertFailed atomic.Bool
@@ -172,6 +175,7 @@ func tailCodexSession(ctx context.Context, st *store.Store, rend *renderer.Termi
 				}
 				continue
 			}
+			parsedEvents = annotator.Annotate(parsedEvents)
 
 			insertedEvents, err := st.AppendEvents(parsedEvents)
 			if err != nil {

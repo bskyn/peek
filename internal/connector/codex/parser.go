@@ -161,13 +161,20 @@ func parseEventMsg(raw rawRolloutLine, sessionID string, ts time.Time, seq int64
 		return []ev.Event{event}, seq + 1, nil
 
 	case "token_count":
+		payload := map[string]interface{}{
+			"subtype": "token_count",
+			"info":    msg.Info,
+		}
+		if usage, ok := parseTokenCountUsage(msg.Info); ok {
+			payload["usage"] = usage
+		}
 		event := ev.Event{
 			ID:          eventID(sessionID, seq),
 			SessionID:   sessionID,
 			Timestamp:   ts,
 			Seq:         seq,
 			Type:        ev.EventProgress,
-			PayloadJSON: mustJSON(map[string]interface{}{"subtype": "token_count", "info": msg.Info}),
+			PayloadJSON: mustJSON(payload),
 		}
 		return []ev.Event{event}, seq + 1, nil
 
@@ -326,6 +333,30 @@ func makeToolCallEvent(sessionID string, ts time.Time, seq int64, toolName strin
 
 func isApplyPatchTool(name string) bool {
 	return name == "apply_patch" || strings.HasSuffix(name, ".apply_patch")
+}
+
+func parseTokenCountUsage(raw json.RawMessage) (map[string]int, bool) {
+	var info struct {
+		TotalTokenUsage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			TotalTokens  int `json:"total_tokens"`
+		} `json:"total_token_usage"`
+	}
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return nil, false
+	}
+	if info.TotalTokenUsage.TotalTokens == 0 {
+		info.TotalTokenUsage.TotalTokens = info.TotalTokenUsage.InputTokens + info.TotalTokenUsage.OutputTokens
+	}
+	if info.TotalTokenUsage.TotalTokens == 0 {
+		return nil, false
+	}
+	return map[string]int{
+		"input_tokens":  info.TotalTokenUsage.InputTokens,
+		"output_tokens": info.TotalTokenUsage.OutputTokens,
+		"total_tokens":  info.TotalTokenUsage.TotalTokens,
+	}, true
 }
 
 // rawCompactedPayload matches the payload of compacted lines.

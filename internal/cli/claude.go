@@ -88,7 +88,9 @@ func runClaude(sessionID string, replay bool) error {
 	rend.Source = "Claude"
 
 	// Always use follow mode — automatically switches to new sessions
-	return followSessions(ctx, st, rend, rt, claudeDir, sf, replay)
+	err = followSessions(ctx, st, rend, rt, claudeDir, sf, replay)
+	rend.RenderUsageSummary()
+	return err
 }
 
 // followSessions tails the current session and automatically switches to new sessions.
@@ -173,6 +175,7 @@ func tailSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRe
 			seq = maxSeq + 1
 		}
 	}
+	annotator := newUsageAnnotator(st, internalSessionID, replay)
 
 	// Process lines in a goroutine
 	var wg sync.WaitGroup
@@ -188,6 +191,7 @@ func tailSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRe
 				}
 				continue
 			}
+			parsedEvents = annotator.Annotate(parsedEvents)
 
 			insertedEvents, err := st.AppendEvents(parsedEvents)
 			if err != nil {
@@ -289,11 +293,13 @@ func importClaudeSessionFile(st *store.Store, rt *viewer.Runtime, sf *claude.Ses
 
 	internalSessionID := "claude-" + sf.SessionID
 	var seq int64
+	annotator := newUsageAnnotator(st, internalSessionID, false)
 	for scanner.Scan() {
 		parsedEvents, nextSeq, err := claude.ParseLine(scanner.Text(), internalSessionID, seq)
 		if err != nil {
 			continue
 		}
+		parsedEvents = annotator.Annotate(parsedEvents)
 		insertedEvents, err := st.AppendEvents(parsedEvents)
 		if err != nil {
 			return err

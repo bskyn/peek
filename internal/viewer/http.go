@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/store"
+	"github.com/bskyn/peek/internal/usage"
 )
 
 type statusResponse struct {
@@ -88,12 +90,44 @@ func handleGetSessionEvents(st *store.Store) http.HandlerFunc {
 			return
 		}
 
-		page, err := st.GetEventPage(sessionID, afterSeq, limit)
+		events, err := st.GetEvents(sessionID)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		annotator := usage.NewAnnotator()
+		events = annotator.Annotate(events)
+		page := paginateEvents(events, afterSeq, limit)
 		writeJSON(w, http.StatusOK, page)
+	}
+}
+
+func paginateEvents(events []event.Event, afterSeq int64, limit int) store.EventPage {
+	if limit <= 0 {
+		limit = 200
+	}
+
+	filtered := make([]event.Event, 0, limit)
+	var nextAfterSeq int64
+	for _, ev := range events {
+		if ev.Seq <= afterSeq {
+			continue
+		}
+		if len(filtered) == limit {
+			return store.EventPage{
+				Events:       filtered,
+				HasMore:      true,
+				NextAfterSeq: nextAfterSeq,
+			}
+		}
+		nextAfterSeq = ev.Seq
+		filtered = append(filtered, ev)
+	}
+
+	return store.EventPage{
+		Events:       filtered,
+		HasMore:      false,
+		NextAfterSeq: nextAfterSeq,
 	}
 }
 

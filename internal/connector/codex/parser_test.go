@@ -102,6 +102,13 @@ func TestParseTokenCount(t *testing.T) {
 	if events[0].Type != ev.EventProgress {
 		t.Errorf("expected progress, got %s", events[0].Type)
 	}
+	usage, ok := ev.PayloadUsage(events[0].PayloadJSON)
+	if !ok {
+		t.Fatal("expected usage payload")
+	}
+	if usage.InputTokens != 100 || usage.OutputTokens != 50 || usage.TotalTokens != 150 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
 }
 
 func TestParseResponseMessageSkipped(t *testing.T) {

@@ -3,8 +3,10 @@ package renderer
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/bskyn/peek/internal/event"
@@ -33,11 +35,12 @@ const maxOutputLines = 15
 
 // TerminalRenderer renders events to a terminal.
 type TerminalRenderer struct {
-	w         io.Writer
-	color     bool
-	seqNum    int64
-	Source    string // "Claude", "Codex", etc. — used for assistant message labels
-	lastModel string // most recently seen model, used as fallback
+	w          io.Writer
+	color      bool
+	seqNum     int64
+	Source     string // "Claude", "Codex", etc. — used for assistant message labels
+	lastModel  string // most recently seen model, used as fallback
+	totalUsage event.Usage
 }
 
 // NewTerminal creates a new terminal renderer.
@@ -58,12 +61,13 @@ func NewTerminalAuto() *TerminalRenderer {
 // RenderEvent renders a single event to the terminal.
 func (r *TerminalRenderer) RenderEvent(ev event.Event) {
 	r.seqNum++
+	r.accumulateUsage(ev.PayloadJSON)
 	ts := ev.Timestamp.Format("15:04:05")
 
 	switch ev.Type {
 	case event.EventUserMessage:
 		text := event.PayloadText(ev.PayloadJSON)
-		r.printHeader(ts, "User", blue+bold)
+		r.printHeader(ts, r.headerLabel("User", ev.PayloadJSON), blue+bold)
 		r.printBodyStyled(text, blue)
 
 	case event.EventAssistantThinking:
@@ -72,7 +76,7 @@ func (r *TerminalRenderer) RenderEvent(ev event.Event) {
 			r.lastModel = m
 		}
 		label := fmt.Sprintf("Thinking (%d tokens)", tokenCount)
-		r.printHeader(ts, label, dim+italic)
+		r.printHeader(ts, r.headerLabel(label, ev.PayloadJSON), dim+italic)
 		r.printBodyDim(thinking)
 
 	case event.EventAssistantMessage:
@@ -81,22 +85,22 @@ func (r *TerminalRenderer) RenderEvent(ev event.Event) {
 			r.lastModel = m
 		}
 		label := r.assistantLabel()
-		r.printHeader(ts, label, magenta+bold)
+		r.printHeader(ts, r.headerLabel(label, ev.PayloadJSON), magenta+bold)
 		r.printBodyStyled(text, magenta)
 
 	case event.EventToolCall:
 		if patch := event.PayloadPatchCall(ev.PayloadJSON); patch != nil {
-			r.printHeader(ts, patchLabel(patch), cyan)
+			r.printHeader(ts, r.headerLabel(patchLabel(patch), ev.PayloadJSON), cyan)
 			r.printPatchBody(patch)
 		} else if edit := event.PayloadEditCall(ev.PayloadJSON); edit != nil {
-			r.printHeader(ts, "Edit: "+edit.FilePath, cyan)
+			r.printHeader(ts, r.headerLabel("Edit: "+edit.FilePath, ev.PayloadJSON), cyan)
 			r.printDiff(edit.OldString, edit.NewString)
 		} else if write := event.PayloadWriteCall(ev.PayloadJSON); write != nil {
-			r.printHeader(ts, "Write: "+write.FilePath, cyan)
+			r.printHeader(ts, r.headerLabel("Write: "+write.FilePath, ev.PayloadJSON), cyan)
 			r.printWriteBody(write.Content)
 		} else {
 			name, input := event.PayloadToolCall(ev.PayloadJSON)
-			r.printHeader(ts, "Tool: "+name, cyan)
+			r.printHeader(ts, r.headerLabel("Tool: "+name, ev.PayloadJSON), cyan)
 			r.printBody("> " + input)
 		}
 
@@ -106,11 +110,15 @@ func (r *TerminalRenderer) RenderEvent(ev event.Event) {
 			// Try to get content directly
 			text = "(no output)"
 		}
-		r.printHeader(ts, "Result", green)
+		r.printHeader(ts, r.headerLabel("Result", ev.PayloadJSON), green)
 		r.printBodyTruncated(text, maxOutputLines)
 
 	case event.EventProgress:
-		r.printHeader(ts, "Progress", gray)
+		label := "Progress"
+		if event.PayloadProgressSubtype(ev.PayloadJSON) == "token_count" {
+			label = "Usage"
+		}
+		r.printHeader(ts, r.headerLabel(label, ev.PayloadJSON), gray)
 		if text := event.PayloadText(ev.PayloadJSON); text != "" {
 			r.printBodyTruncated(text, maxOutputLines)
 		}
@@ -119,11 +127,11 @@ func (r *TerminalRenderer) RenderEvent(ev event.Event) {
 		if m := event.PayloadModel(ev.PayloadJSON); m != "" {
 			r.lastModel = m
 		}
-		r.printHeader(ts, "System", gray)
+		r.printHeader(ts, r.headerLabel("System", ev.PayloadJSON), gray)
 
 	case event.EventError:
 		text := event.PayloadText(ev.PayloadJSON)
-		r.printHeader(ts, "Error", red+bold)
+		r.printHeader(ts, r.headerLabel("Error", ev.PayloadJSON), red+bold)
 		r.printBody(text)
 	}
 
@@ -203,6 +211,66 @@ func (r *TerminalRenderer) printHeader(ts string, label string, style string) {
 	} else {
 		fmt.Fprintf(r.w, "  [%d]  %s  %s\n", r.seqNum, ts, label)
 	}
+}
+
+func (r *TerminalRenderer) headerLabel(base string, payload []byte) string {
+	usage, ok := event.PayloadUsage(payload)
+	if !ok {
+		return base
+	}
+
+	parts := []string{fmt.Sprintf("token count: %s", formatTokenCount(usage.TotalTokens))}
+	if usage.TotalCostUSD > 0 {
+		parts = append(parts, fmt.Sprintf("cost %s", formatUSD(usage.TotalCostUSD)))
+	}
+	return fmt.Sprintf("%s (%s)", base, strings.Join(parts, " | "))
+}
+
+func formatTokenCount(value int) string {
+	if value <= 0 {
+		return "0"
+	}
+	text := strconv.Itoa(value)
+	if len(text) <= 3 {
+		return text
+	}
+
+	var builder strings.Builder
+	prefix := len(text) % 3
+	if prefix == 0 {
+		prefix = 3
+	}
+	builder.WriteString(text[:prefix])
+	for i := prefix; i < len(text); i += 3 {
+		builder.WriteByte(',')
+		builder.WriteString(text[i : i+3])
+	}
+	return builder.String()
+}
+
+func formatUSD(value float64) string {
+	if value <= 0 {
+		return "$0.00"
+	}
+
+	abs := math.Abs(value)
+	decimals := 2
+	switch {
+	case abs < 0.001:
+		decimals = 6
+	case abs < 0.01:
+		decimals = 5
+	case abs < 0.1:
+		decimals = 4
+	}
+
+	text := strconv.FormatFloat(value, 'f', decimals, 64)
+	text = strings.TrimRight(text, "0")
+	text = strings.TrimRight(text, ".")
+	if !strings.Contains(text, ".") {
+		text += ".00"
+	}
+	return "$" + text
 }
 
 func (r *TerminalRenderer) printBody(text string) {
@@ -428,6 +496,53 @@ func computeLCS(a, b []string) []string {
 		result[l], result[r] = result[r], result[l]
 	}
 	return result
+}
+
+func (r *TerminalRenderer) accumulateUsage(payload []byte) {
+	usage, ok := event.PayloadUsage(payload)
+	if !ok {
+		return
+	}
+	r.totalUsage.InputTokens += usage.InputTokens
+	r.totalUsage.OutputTokens += usage.OutputTokens
+	r.totalUsage.TotalTokens += usage.TotalTokens
+	r.totalUsage.InputCostUSD += usage.InputCostUSD
+	r.totalUsage.OutputCostUSD += usage.OutputCostUSD
+	r.totalUsage.TotalCostUSD += usage.TotalCostUSD
+}
+
+// RenderUsageSummary prints the accumulated cost summary.
+func (r *TerminalRenderer) RenderUsageSummary() {
+	u := r.totalUsage
+	if !u.HasTokens() && u.TotalCostUSD == 0 {
+		return
+	}
+
+	divider := strings.Repeat("─", 40)
+	if r.color {
+		fmt.Fprintf(r.w, "\n  %s%s%s\n", dim, divider, reset)
+		fmt.Fprintf(r.w, "  %sSession Cost Summary%s\n", bold+yellow, reset)
+		fmt.Fprintf(r.w, "  %s%s%s\n", dim, divider, reset)
+	} else {
+		fmt.Fprintf(r.w, "\n  %s\n  Session Cost Summary\n  %s\n", divider, divider)
+	}
+
+	fmt.Fprintln(r.w)
+	r.printSummaryLine("Total cost", formatUSD(u.TotalCostUSD), bold+green)
+	r.printSummaryLine("Input tokens", formatTokenCount(u.InputTokens), "")
+	r.printSummaryLine("Output tokens", formatTokenCount(u.OutputTokens), "")
+	r.printSummaryLine("Total tokens", formatTokenCount(u.TotalTokens), "")
+	fmt.Fprintln(r.w)
+}
+
+func (r *TerminalRenderer) printSummaryLine(label, value, style string) {
+	if r.color && style != "" {
+		fmt.Fprintf(r.w, "  %s%-16s%s %s%s%s\n", dim, label, reset, style, value, reset)
+	} else if r.color {
+		fmt.Fprintf(r.w, "  %s%-16s%s %s\n", dim, label, reset, value)
+	} else {
+		fmt.Fprintf(r.w, "  %-16s %s\n", label, value)
+	}
 }
 
 func (r *TerminalRenderer) printBodyTruncated(text string, maxLines int) {

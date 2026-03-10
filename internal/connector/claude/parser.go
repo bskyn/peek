@@ -255,7 +255,49 @@ func parseAssistantEvent(raw rawSessionEvent, sessionID string, ts time.Time, se
 		}
 	}
 
+	attachUsage(events, msg)
 	return events, seq, nil
+}
+
+func attachUsage(events []ev.Event, msg rawMessage) {
+	if msg.Usage == nil || len(events) == 0 {
+		return
+	}
+
+	target := lastEventIndex(events, ev.EventAssistantMessage)
+	if target < 0 {
+		target = lastEventIndex(events, ev.EventAssistantThinking)
+	}
+	if target < 0 {
+		target = lastEventIndex(events, ev.EventToolCall)
+	}
+	if target < 0 {
+		return
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(events[target].PayloadJSON, &payload); err != nil {
+		return
+	}
+
+	payload["usage"] = map[string]int{
+		"input_tokens":  msg.Usage.InputTokens,
+		"output_tokens": msg.Usage.OutputTokens,
+		"total_tokens":  msg.Usage.InputTokens + msg.Usage.OutputTokens,
+	}
+	if msg.Model != "" {
+		payload["model"] = msg.Model
+	}
+	events[target].PayloadJSON = mustJSON(payload)
+}
+
+func lastEventIndex(events []ev.Event, eventType ev.EventType) int {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == eventType {
+			return i
+		}
+	}
+	return -1
 }
 
 func parseProgressEvent(raw rawSessionEvent, sessionID string, ts time.Time, seq int64) ([]ev.Event, int64, error) {

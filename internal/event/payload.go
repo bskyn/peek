@@ -5,6 +5,33 @@ import (
 	"strings"
 )
 
+// Usage captures normalized token accounting plus estimated pricing metadata.
+type Usage struct {
+	InputTokens   int     `json:"input_tokens,omitempty"`
+	OutputTokens  int     `json:"output_tokens,omitempty"`
+	TotalTokens   int     `json:"total_tokens,omitempty"`
+	InputCostUSD  float64 `json:"input_cost_usd,omitempty"`
+	OutputCostUSD float64 `json:"output_cost_usd,omitempty"`
+	TotalCostUSD  float64 `json:"total_cost_usd,omitempty"`
+	PricingModel  string  `json:"pricing_model,omitempty"`
+}
+
+// Normalized fills derived totals when possible.
+func (u Usage) Normalized() Usage {
+	if u.TotalTokens == 0 {
+		u.TotalTokens = u.InputTokens + u.OutputTokens
+	}
+	if u.TotalCostUSD == 0 {
+		u.TotalCostUSD = u.InputCostUSD + u.OutputCostUSD
+	}
+	return u
+}
+
+// HasTokens reports whether any token accounting is present.
+func (u Usage) HasTokens() bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.TotalTokens > 0
+}
+
 // PayloadText extracts the "text" field from an event's payload JSON, if present.
 func PayloadText(payload json.RawMessage) string {
 	var p struct {
@@ -37,6 +64,49 @@ func PayloadModel(payload json.RawMessage) string {
 		return ""
 	}
 	return p.Model
+}
+
+// PayloadProgressSubtype extracts the "subtype" field from a progress/system payload.
+func PayloadProgressSubtype(payload json.RawMessage) string {
+	var p struct {
+		Subtype string `json:"subtype"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return ""
+	}
+	return p.Subtype
+}
+
+// PayloadUsage extracts the normalized "usage" field from an event payload.
+func PayloadUsage(payload json.RawMessage) (Usage, bool) {
+	var p struct {
+		Usage *Usage `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil || p.Usage == nil {
+		return Usage{}, false
+	}
+	usage := p.Usage.Normalized()
+	if !usage.HasTokens() && usage.TotalCostUSD == 0 {
+		return Usage{}, false
+	}
+	return usage, true
+}
+
+// PayloadTokenCountUsage extracts the cumulative token_count payload, if present.
+func PayloadTokenCountUsage(payload json.RawMessage) (Usage, bool) {
+	var p struct {
+		Info struct {
+			TotalTokenUsage Usage `json:"total_token_usage"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return Usage{}, false
+	}
+	usage := p.Info.TotalTokenUsage.Normalized()
+	if !usage.HasTokens() {
+		return Usage{}, false
+	}
+	return usage, true
 }
 
 // PayloadToolCall extracts tool call info from a tool_call event payload.
