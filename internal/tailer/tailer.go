@@ -8,8 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/bskyn/peek/internal/jsonl"
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/bskyn/peek/internal/jsonl"
 )
 
 // Cursor tracks the read position in a file.
