@@ -99,6 +99,12 @@ Codex sessions are discovered from `~/.codex/sessions/`. Set `CODEX_HOME` to ove
 
 ```sh
 peek sessions list
+
+# Delete one session by ID
+peek sessions delete aa961bad-c727-4479-ac42-8d1db8bdf261
+
+# Delete all sessions
+peek sessions delete --all
 ```
 
 ### Replay a session from the beginning

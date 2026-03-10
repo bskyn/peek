@@ -19,6 +19,16 @@ type Store struct {
 	db *sql.DB
 }
 
+// AmbiguousSessionIDError reports that a raw source session ID matched multiple stored sessions.
+type AmbiguousSessionIDError struct {
+	Input   string
+	Matches []string
+}
+
+func (e *AmbiguousSessionIDError) Error() string {
+	return fmt.Sprintf("session %q matches multiple stored sessions", e.Input)
+}
+
 // SessionSummary is the read model used by the viewer.
 type SessionSummary struct {
 	ID              string    `json:"id"`
@@ -409,6 +419,122 @@ func (s *Store) MaxSeq(sessionID string) (int64, error) {
 	var seq int64
 	err := row.Scan(&seq)
 	return seq, err
+}
+
+// ResolveSessionID resolves either an internal session ID or a raw source session ID.
+func (s *Store) ResolveSessionID(id string) (string, error) {
+	if id == "" {
+		return "", sql.ErrNoRows
+	}
+
+	ok, err := s.HasSession(id)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return id, nil
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id
+		 FROM sessions
+		 WHERE source_session_id = ?
+		 ORDER BY updated_at DESC, created_at DESC, id ASC`,
+		id,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	matches := make([]string, 0, 1)
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			return "", err
+		}
+		matches = append(matches, sessionID)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", sql.ErrNoRows
+	case 1:
+		return matches[0], nil
+	default:
+		return "", &AmbiguousSessionIDError{Input: id, Matches: matches}
+	}
+}
+
+// DeleteSession removes a session and its stored events/cursors.
+func (s *Store) DeleteSession(id string) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if _, err := tx.Exec(`DELETE FROM events WHERE session_id = ?`, id); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`DELETE FROM cursors WHERE session_id = ?`, id); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?`, id); err != nil {
+		return false, err
+	}
+
+	result, err := tx.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+
+	return rows > 0, nil
+}
+
+// DeleteAllSessions removes all stored sessions, events, and cursors.
+func (s *Store) DeleteAllSessions() (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	var count int64
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&count); err != nil {
+		return 0, err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM cursors`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM events`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions`); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }
 
 func nilIfEmpty(s string) interface{} {
