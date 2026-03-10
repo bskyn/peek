@@ -1,18 +1,30 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 
+import { CostSidebar } from "../components/CostSidebar";
 import { EmptyPanel } from "../components/EmptyPanel";
 import { SessionCard } from "../components/SessionCard";
 import { TimelineCard } from "../components/TimelineCard";
-import { useRouter } from "../hooks/useRouter";
 import { useSessionDetail } from "../hooks/useSessionDetail";
 import type { TimelineSort } from "../hooks/useSessionDetail";
 import { useSessions } from "../hooks/useSessions";
 import { buildHeaderTitle, deriveDisplayStatus, formatDateTime } from "../lib/format";
 import { openStream } from "../lib/stream";
-import type { SessionDetail } from "../lib/types";
 
 export function App() {
-  const { navigate, selectedSessionID } = useRouter();
+  const routerState = useRouterState();
+  const tanstackNavigate = useNavigate();
+
+  const sessionMatch = routerState.matches.find((m) => m.routeId === "/sessions/$sessionId");
+  const selectedSessionID =
+    (sessionMatch?.params as Record<string, string> | undefined)?.sessionId ?? "";
+
+  const navigateToSession = useCallback(
+    (sessionId: string) => {
+      tanstackNavigate({ to: "/sessions/$sessionId", params: { sessionId } });
+    },
+    [tanstackNavigate],
+  );
 
   const {
     sessions,
@@ -37,6 +49,7 @@ export function App() {
     totalCount,
   } = useSessionDetail(selectedSessionID);
 
+  // Keep session metadata in sync via SSE
   useEffect(() => {
     return openStream(
       "",
@@ -44,25 +57,8 @@ export function App() {
         if (envelope.type !== "session_upsert" || envelope.session == null) return;
         const upserted = envelope.session;
         setDetail((current) => {
-          if (current == null) return current;
-          let next = current;
-          let changed = false;
-          if (current.session.id === upserted.id) {
-            next = { ...next, session: upserted };
-            changed = true;
-          }
-          if (current.root_session.id === upserted.id) {
-            next = { ...next, root_session: upserted };
-            changed = true;
-          }
-          const nextChildren = current.child_sessions.map((c) =>
-            c.id === upserted.id ? upserted : c,
-          );
-          if (nextChildren.some((c, i) => c !== current.child_sessions[i])) {
-            next = { ...next, child_sessions: nextChildren };
-            changed = true;
-          }
-          return changed ? next : current;
+          if (current == null || current.session.id !== upserted.id) return current;
+          return { ...current, session: upserted };
         });
       },
       () => {},
@@ -78,6 +74,9 @@ export function App() {
     detailStreamStatus,
   );
 
+  const hasSession = selectedSessionID !== "";
+  const showDetail = hasSession && !isLoadingDetail && detail != null;
+
   return (
     <div className="flex h-full flex-col bg-base p-3 font-sans text-[13px]">
       {/* Top bar */}
@@ -92,7 +91,11 @@ export function App() {
       </header>
 
       {/* Main workspace */}
-      <main className="grid min-h-0 flex-1 grid-cols-[280px_1fr] gap-3">
+      <main
+        className={`grid min-h-0 flex-1 gap-3 ${
+          showDetail ? "grid-cols-[280px_1fr_260px]" : "grid-cols-[280px_1fr]"
+        }`}
+      >
         {/* Session sidebar */}
         <aside className="flex flex-col gap-2 overflow-hidden rounded-lg border border-surface-0 bg-base p-3">
           <div>
@@ -121,7 +124,7 @@ export function App() {
                 key={session.id}
                 session={session}
                 isSelected={selectedSessionID === session.id}
-                onClick={() => navigate({ kind: "session", sessionID: session.id })}
+                onClick={() => navigateToSession(session.id)}
               />
             ))}
           </div>
@@ -129,22 +132,22 @@ export function App() {
 
         {/* Detail pane */}
         <section className="flex flex-col gap-2 overflow-hidden rounded-lg border border-surface-0 bg-base p-3">
-          {selectedSessionID === "" ? (
+          {!hasSession ? (
             <EmptyPanel
               title="Choose a session"
               body="The list stays live while the timeline view focuses on one session at a time."
             />
           ) : null}
 
-          {selectedSessionID !== "" && isLoadingDetail ? (
+          {hasSession && isLoadingDetail ? (
             <EmptyPanel title="Loading timeline" body="Fetching session metadata and events." />
           ) : null}
 
-          {selectedSessionID !== "" && !isLoadingDetail && detailError !== "" ? (
+          {hasSession && !isLoadingDetail && detailError !== "" ? (
             <EmptyPanel title="Timeline unavailable" body={detailError} />
           ) : null}
 
-          {selectedSessionID !== "" && !isLoadingDetail && detail != null ? (
+          {showDetail ? (
             <>
               <div className="flex items-center justify-between gap-3 border-b border-surface-0 pb-2">
                 <div className="flex items-center gap-3">
@@ -173,8 +176,6 @@ export function App() {
                 </div>
               </div>
 
-              <BranchStrip detail={detail} selectedSessionID={selectedSessionID} navigate={navigate} />
-
               <div
                 ref={timelineRef}
                 className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-auto pr-1"
@@ -191,39 +192,13 @@ export function App() {
             </>
           ) : null}
         </section>
+
+        {/* Cost sidebar */}
+        {showDetail ? <CostSidebar events={events} /> : null}
       </main>
-    </div>
-  );
-}
 
-function BranchStrip({
-  detail,
-  selectedSessionID,
-  navigate,
-}: {
-  detail: SessionDetail;
-  selectedSessionID: string;
-  navigate: (route: { kind: "session"; sessionID: string }) => void;
-}) {
-  const branchSessions = [detail.root_session, ...detail.child_sessions];
-  if (branchSessions.length <= 1) return null;
-
-  return (
-    <div className="flex flex-wrap gap-1">
-      {branchSessions.map((session) => (
-        <button
-          key={session.id}
-          type="button"
-          onClick={() => navigate({ kind: "session", sessionID: session.id })}
-          className={`cursor-pointer rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
-            selectedSessionID === session.id
-              ? "border-lavender/30 bg-lavender/8 text-lavender"
-              : "border-surface-0 bg-mantle text-overlay-0 hover:text-overlay-1"
-          }`}
-        >
-          {session.id === detail.root_session.id ? "Root" : session.source_session_id}
-        </button>
-      ))}
+      {/* TanStack Router outlet (child routes have no visible output) */}
+      <Outlet />
     </div>
   );
 }

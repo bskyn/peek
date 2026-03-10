@@ -12,9 +12,7 @@ function buildUnifiedDiff(oldText: string, newText: string): string {
   const lines: string[] = ["--- a", "+++ b"];
 
   for (const hunk of patch.hunks) {
-    lines.push(
-      `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
-    );
+    lines.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
     for (const line of hunk.lines) {
       lines.push(line);
     }
@@ -49,8 +47,7 @@ export function DiffBlock(props: DiffBlockProps) {
 
   // Fallback: show raw text if parsing fails
   if (files.length === 0 || files[0].hunks.length === 0) {
-    const fallbackText =
-      props.rawDiff ?? props.editStrings?.newText ?? "(empty)";
+    const fallbackText = props.rawDiff ?? props.editStrings?.newText ?? "(empty)";
     if (fallbackText === "" || fallbackText === "(empty)") {
       return (
         <pre className="bg-mantle p-2.5 font-mono text-[11px] leading-relaxed text-subtext-0">
@@ -85,9 +82,7 @@ export function DiffBlock(props: DiffBlockProps) {
           diffType={file.type}
           hunks={file.hunks}
         >
-          {(hunks) =>
-            hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)
-          }
+          {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
         </Diff>
       ))}
     </div>

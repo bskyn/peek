@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@tanstack/react-router": "^1.166.6",
     "diff": "^8.0.3",
     "react": "^19.0.0",
     "react-diff-view": "^3.3.2",

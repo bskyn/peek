@@ -44,9 +44,7 @@ export function SessionCard({
       <p className="mt-0.5 truncate text-[11px] text-overlay-1">
         {session.project_path || "Unknown project"}
       </p>
-      <p className="mt-0.5 text-[10px] tabular-nums text-overlay-0">
-        {session.event_count} events
-      </p>
+      <p className="mt-0.5 text-[10px] tabular-nums text-overlay-0">{session.event_count} events</p>
     </button>
   );
 }

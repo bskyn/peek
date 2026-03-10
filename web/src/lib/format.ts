@@ -13,6 +13,7 @@ export function titleForEvent(event: ViewerEvent): string {
     case "tool_result":
       return "Tool result";
     case "progress":
+      if (stringValue(event.payload_json.subtype) === "token_count") return "Usage";
       return "Progress";
     case "system":
       return "System";
@@ -34,10 +35,8 @@ export function describeEvent(event: ViewerEvent): string {
     case "tool_call":
       return prettyJSON(event.payload_json.input);
     case "progress":
-      return (
-        stringValue(event.payload_json.text) ||
-        stringValue(event.payload_json.subtype)
-      );
+      if (stringValue(event.payload_json.subtype) === "token_count") return "";
+      return stringValue(event.payload_json.text) || stringValue(event.payload_json.subtype);
     case "system":
       return (
         stringValue(event.payload_json.text) ||
@@ -62,6 +61,17 @@ export function extraPayload(event: ViewerEvent): string {
   }
   if (Object.keys(payload).length === 0) return "";
   return prettyJSON(payload);
+}
+
+export function usageSummary(event: ViewerEvent): string {
+  const usage = usageValue(event.payload_json.usage);
+  if (usage == null) return "";
+
+  const parts = [`token count: ${formatTokenCount(usage.total_tokens)}`];
+  if (usage.total_cost_usd > 0) {
+    parts.push(`cost ${formatUSD(usage.total_cost_usd)}`);
+  }
+  return parts.join(" | ");
 }
 
 export function formatDateTime(raw: string): string {
@@ -101,9 +111,7 @@ export function deriveDisplayStatus(
   return streamBadge(detailStreamStatus);
 }
 
-function streamBadge(
-  status: StreamStatus,
-): { color: string; dotClass: string; label: string } {
+function streamBadge(status: StreamStatus): { color: string; dotClass: string; label: string } {
   switch (status) {
     case "connecting":
       return {
@@ -144,4 +152,77 @@ function prettyJSON(value: unknown): string {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+type UsageValue = {
+  total_tokens: number;
+  total_cost_usd: number;
+};
+
+function usageValue(value: unknown): UsageValue | null {
+  if (value == null || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const totalTokens = numberValue(record.total_tokens);
+  const totalCost = numberValue(record.total_cost_usd);
+  if (totalTokens <= 0 && totalCost <= 0) return null;
+  return {
+    total_tokens: totalTokens,
+    total_cost_usd: totalCost,
+  };
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+export function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
+export function formatUSD(value: number): string {
+  if (value <= 0) return "$0.00";
+
+  let maximumFractionDigits = 2;
+  if (value < 0.001) maximumFractionDigits = 6;
+  else if (value < 0.01) maximumFractionDigits = 5;
+  else if (value < 0.1) maximumFractionDigits = 4;
+
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits,
+  }).format(value);
+}
+
+export type AggregatedUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  inputCostUSD: number;
+  outputCostUSD: number;
+  totalCostUSD: number;
+};
+
+export function aggregateUsage(events: ViewerEvent[]): AggregatedUsage {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let inputCostUSD = 0;
+  let outputCostUSD = 0;
+  let totalCostUSD = 0;
+
+  for (const event of events) {
+    const usage = event.payload_json.usage;
+    if (usage == null || typeof usage !== "object") continue;
+    const u = usage as Record<string, unknown>;
+    inputTokens += numberValue(u.input_tokens);
+    outputTokens += numberValue(u.output_tokens);
+    totalTokens += numberValue(u.total_tokens);
+    inputCostUSD += numberValue(u.input_cost_usd);
+    outputCostUSD += numberValue(u.output_cost_usd);
+    totalCostUSD += numberValue(u.total_cost_usd);
+  }
+
+  return { inputTokens, outputTokens, totalTokens, inputCostUSD, outputCostUSD, totalCostUSD };
 }

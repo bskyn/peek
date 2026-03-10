@@ -1,5 +1,11 @@
 import type { ViewerEvent } from "../lib/types";
-import { titleForEvent, describeEvent, extraPayload, formatDateTime } from "../lib/format";
+import {
+  titleForEvent,
+  describeEvent,
+  extraPayload,
+  formatDateTime,
+  usageSummary,
+} from "../lib/format";
 import { DiffBlock } from "./DiffBlock";
 
 function isUserEvent(type: string): boolean {
@@ -43,9 +49,7 @@ function extractDiffInfo(event: ViewerEvent): DiffInfo | null {
   if (event.type !== "tool_call") return null;
 
   const toolName =
-    typeof event.payload_json.tool_name === "string"
-      ? event.payload_json.tool_name
-      : "";
+    typeof event.payload_json.tool_name === "string" ? event.payload_json.tool_name : "";
   const payload = asRecord(event.payload_json);
 
   // Codex apply_patch: raw unified diff or delete operation
@@ -117,6 +121,7 @@ export function TimelineCard({ event }: { event: ViewerEvent }) {
   const isUser = isUserEvent(event.type);
   const diffInfo = extractDiffInfo(event);
   const color = headerColor(event.type);
+  const usage = usageSummary(event);
 
   return (
     <article
@@ -126,14 +131,20 @@ export function TimelineCard({ event }: { event: ViewerEvent }) {
     >
       <div className="flex items-baseline justify-between gap-3">
         <div className={`flex items-baseline gap-1.5 ${color}`}>
-          <span className="text-[10px] font-medium uppercase tracking-wider">
-            {title}
-          </span>
+          <span className="text-[10px] font-medium uppercase tracking-wider">{title}</span>
           <span className="font-mono text-[11px]">#{event.seq}</span>
         </div>
-        <span className="shrink-0 text-[10px] tabular-nums text-overlay-0">
-          {formatDateTime(event.timestamp)}
-        </span>
+        <div className="flex shrink-0 items-center gap-2 text-[10px] tabular-nums text-overlay-0">
+          {usage !== "" ? (
+            <>
+              <span className="text-right">{usage}</span>
+              <span aria-hidden="true" className="text-overlay-1">
+                |
+              </span>
+            </>
+          ) : null}
+          <span>{formatDateTime(event.timestamp)}</span>
+        </div>
       </div>
 
       {diffInfo != null ? (
