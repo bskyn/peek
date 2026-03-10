@@ -34,7 +34,7 @@ func TestParseUserMessage(t *testing.T) {
 }
 
 func TestParseAssistantWithThinkingAndText(t *testing.T) {
-	line := `{"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"2026-03-05T14:32:06.000Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1200,"output_tokens":300},"content":[{"type":"thinking","thinking":"let me reason about this"},{"type":"text","text":"Here is my answer."}]}}`
+	line := `{"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"2026-03-05T14:32:06.000Z","message":{"role":"assistant","id":"msg_test123","model":"claude-opus-4-6","usage":{"input_tokens":1200,"output_tokens":300,"cache_creation_input_tokens":5000,"cache_read_input_tokens":2000},"content":[{"type":"thinking","thinking":"let me reason about this"},{"type":"text","text":"Here is my answer."}]}}`
 
 	events, nextSeq, err := ParseLine(line, "s1", 0)
 	if err != nil {
@@ -64,8 +64,21 @@ func TestParseAssistantWithThinkingAndText(t *testing.T) {
 	if !ok {
 		t.Fatal("expected assistant message usage")
 	}
-	if usage.InputTokens != 1200 || usage.OutputTokens != 300 || usage.TotalTokens != 1500 {
-		t.Fatalf("unexpected usage: %+v", usage)
+	if usage.InputTokens != 1200 || usage.OutputTokens != 300 {
+		t.Fatalf("unexpected usage tokens: %+v", usage)
+	}
+	if usage.CacheCreationTokens != 5000 || usage.CacheReadTokens != 2000 {
+		t.Fatalf("unexpected cache tokens: %+v", usage)
+	}
+	expectedTotal := 1200 + 300 + 5000 + 2000
+	if usage.TotalTokens != expectedTotal {
+		t.Fatalf("unexpected total tokens: got %d, want %d", usage.TotalTokens, expectedTotal)
+	}
+
+	// Verify message_id is attached
+	msgID := ev.PayloadMessageID(events[1].PayloadJSON)
+	if msgID != "msg_test123" {
+		t.Fatalf("unexpected message_id: %q", msgID)
 	}
 
 	if nextSeq != 2 {

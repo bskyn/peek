@@ -7,22 +7,26 @@ import (
 
 // Usage captures normalized token accounting plus estimated pricing metadata.
 type Usage struct {
-	InputTokens   int     `json:"input_tokens,omitempty"`
-	OutputTokens  int     `json:"output_tokens,omitempty"`
-	TotalTokens   int     `json:"total_tokens,omitempty"`
-	InputCostUSD  float64 `json:"input_cost_usd,omitempty"`
-	OutputCostUSD float64 `json:"output_cost_usd,omitempty"`
-	TotalCostUSD  float64 `json:"total_cost_usd,omitempty"`
-	PricingModel  string  `json:"pricing_model,omitempty"`
+	InputTokens         int     `json:"input_tokens,omitempty"`
+	OutputTokens        int     `json:"output_tokens,omitempty"`
+	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
+	TotalTokens         int     `json:"total_tokens,omitempty"`
+	InputCostUSD        float64 `json:"input_cost_usd,omitempty"`
+	OutputCostUSD       float64 `json:"output_cost_usd,omitempty"`
+	CacheCreationCost   float64 `json:"cache_creation_cost_usd,omitempty"`
+	CacheReadCost       float64 `json:"cache_read_cost_usd,omitempty"`
+	TotalCostUSD        float64 `json:"total_cost_usd,omitempty"`
+	PricingModel        string  `json:"pricing_model,omitempty"`
 }
 
 // Normalized fills derived totals when possible.
 func (u Usage) Normalized() Usage {
 	if u.TotalTokens == 0 {
-		u.TotalTokens = u.InputTokens + u.OutputTokens
+		u.TotalTokens = u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens
 	}
 	if u.TotalCostUSD == 0 {
-		u.TotalCostUSD = u.InputCostUSD + u.OutputCostUSD
+		u.TotalCostUSD = u.InputCostUSD + u.OutputCostUSD + u.CacheCreationCost + u.CacheReadCost
 	}
 	return u
 }
@@ -53,6 +57,17 @@ func PayloadThinking(payload json.RawMessage) (string, int) {
 		return "", 0
 	}
 	return p.Thinking, p.TokenCount
+}
+
+// PayloadMessageID extracts the "message_id" field from an event's payload JSON, if present.
+func PayloadMessageID(payload json.RawMessage) string {
+	var p struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return ""
+	}
+	return p.MessageID
 }
 
 // PayloadModel extracts the "model" field from an event's payload JSON, if present.

@@ -11,11 +11,16 @@ type Annotator struct {
 	currentModel       string
 	lastCodexCumul     event.Usage
 	hasCodexCumulative bool
+	// Claude message-level dedup: tracks the last usage snapshot per message ID
+	// so repeated assistant JSONL lines for the same API response are counted once.
+	lastClaudeMsgUsage map[string]event.Usage
 }
 
 // NewAnnotator constructs a fresh event annotator.
 func NewAnnotator() *Annotator {
-	return &Annotator{}
+	return &Annotator{
+		lastClaudeMsgUsage: make(map[string]event.Usage),
+	}
 }
 
 // Observe seeds the annotator from already-persisted events.
@@ -23,6 +28,12 @@ func (a *Annotator) Observe(events []event.Event) {
 	for _, ev := range events {
 		if model := event.PayloadModel(ev.PayloadJSON); model != "" {
 			a.currentModel = model
+		}
+		// Track Claude message-level usage for dedup on resume
+		if msgID := event.PayloadMessageID(ev.PayloadJSON); msgID != "" {
+			if usage, ok := event.PayloadUsage(ev.PayloadJSON); ok {
+				a.lastClaudeMsgUsage[msgID] = usage
+			}
 		}
 		if event.PayloadProgressSubtype(ev.PayloadJSON) != "token_count" {
 			continue
@@ -63,6 +74,8 @@ func (a *Annotator) annotateEvent(ev event.Event) event.Event {
 	}
 
 	usageValue, hasUsage := event.PayloadUsage(ev.PayloadJSON)
+
+	// Codex: cumulative token_count → per-turn delta
 	if event.PayloadProgressSubtype(ev.PayloadJSON) == "token_count" {
 		if cumulative, ok := event.PayloadTokenCountUsage(ev.PayloadJSON); ok {
 			payload["cumulative_usage"] = cumulative.Normalized()
@@ -71,6 +84,21 @@ func (a *Annotator) annotateEvent(ev event.Event) event.Event {
 			a.lastCodexCumul = cumulative.Normalized()
 			a.hasCodexCumulative = true
 			hasUsage = true
+		}
+	}
+
+	// Claude: deduplicate usage across repeated assistant JSONL lines for the same message.
+	// Claude Code writes multiple snapshots per streaming response; each carries the same
+	// cumulative usage. We compute the delta from the previous snapshot for this message_id.
+	if hasUsage {
+		if msgID := stringValue(payload["message_id"]); msgID != "" {
+			prev, hasPrev := a.lastClaudeMsgUsage[msgID]
+			usageValue = claudeMessageDelta(usageValue, prev, hasPrev)
+			payload["usage"] = usageValue
+			// Store the raw (pre-delta) usage as the cumulative snapshot
+			if rawUsage, rawOK := event.PayloadUsage(ev.PayloadJSON); rawOK {
+				a.lastClaudeMsgUsage[msgID] = rawUsage
+			}
 		}
 	}
 
@@ -86,6 +114,18 @@ func (a *Annotator) annotateEvent(ev event.Event) event.Event {
 		a.currentModel = model
 	}
 	return ev
+}
+
+func claudeMessageDelta(current event.Usage, previous event.Usage, hasPrevious bool) event.Usage {
+	if !hasPrevious {
+		return current
+	}
+	return event.Usage{
+		InputTokens:         max(current.InputTokens-previous.InputTokens, 0),
+		OutputTokens:        max(current.OutputTokens-previous.OutputTokens, 0),
+		CacheCreationTokens: max(current.CacheCreationTokens-previous.CacheCreationTokens, 0),
+		CacheReadTokens:     max(current.CacheReadTokens-previous.CacheReadTokens, 0),
+	}.Normalized()
 }
 
 func cumulativeDelta(current event.Usage, previous event.Usage, hasPrevious bool) event.Usage {

@@ -202,18 +202,26 @@ export function formatUSD(value: number): string {
 export type AggregatedUsage = {
   inputTokens: number;
   outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
   totalTokens: number;
   inputCostUSD: number;
   outputCostUSD: number;
+  cacheCreationCostUSD: number;
+  cacheReadCostUSD: number;
   totalCostUSD: number;
 };
 
 export function aggregateUsage(events: ViewerEvent[]): AggregatedUsage {
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheCreationTokens = 0;
+  let cacheReadTokens = 0;
   let totalTokens = 0;
   let inputCostUSD = 0;
   let outputCostUSD = 0;
+  let cacheCreationCostUSD = 0;
+  let cacheReadCostUSD = 0;
   let totalCostUSD = 0;
 
   for (const event of events) {
@@ -222,11 +230,26 @@ export function aggregateUsage(events: ViewerEvent[]): AggregatedUsage {
     const u = usage as Record<string, unknown>;
     inputTokens += numberValue(u.input_tokens);
     outputTokens += numberValue(u.output_tokens);
+    cacheCreationTokens += numberValue(u.cache_creation_tokens);
+    cacheReadTokens += numberValue(u.cache_read_tokens);
     totalTokens += numberValue(u.total_tokens);
     inputCostUSD += numberValue(u.input_cost_usd);
     outputCostUSD += numberValue(u.output_cost_usd);
+    cacheCreationCostUSD += numberValue(u.cache_creation_cost_usd);
+    cacheReadCostUSD += numberValue(u.cache_read_cost_usd);
     totalCostUSD += numberValue(u.total_cost_usd);
   }
 
-  return { inputTokens, outputTokens, totalTokens, inputCostUSD, outputCostUSD, totalCostUSD };
+  return {
+    inputTokens,
+    outputTokens,
+    cacheCreationTokens,
+    cacheReadTokens,
+    totalTokens,
+    inputCostUSD,
+    outputCostUSD,
+    cacheCreationCostUSD,
+    cacheReadCostUSD,
+    totalCostUSD,
+  };
 }

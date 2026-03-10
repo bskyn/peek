@@ -32,6 +32,12 @@ export function CostSidebar({ events }: { events: ViewerEvent[] }) {
             </p>
             <StatRow label="Input" value={formatTokenCount(usage.inputTokens)} />
             <StatRow label="Output" value={formatTokenCount(usage.outputTokens)} />
+            {usage.cacheCreationTokens > 0 && (
+              <StatRow label="Cache write" value={formatTokenCount(usage.cacheCreationTokens)} />
+            )}
+            {usage.cacheReadTokens > 0 && (
+              <StatRow label="Cache read" value={formatTokenCount(usage.cacheReadTokens)} />
+            )}
             <StatRow
               label="Total"
               value={formatTokenCount(usage.totalTokens)}
@@ -45,6 +51,12 @@ export function CostSidebar({ events }: { events: ViewerEvent[] }) {
             </p>
             <StatRow label="Input" value={formatUSD(usage.inputCostUSD)} />
             <StatRow label="Output" value={formatUSD(usage.outputCostUSD)} />
+            {usage.cacheCreationCostUSD > 0 && (
+              <StatRow label="Cache write" value={formatUSD(usage.cacheCreationCostUSD)} />
+            )}
+            {usage.cacheReadCostUSD > 0 && (
+              <StatRow label="Cache read" value={formatUSD(usage.cacheReadCostUSD)} />
+            )}
           </div>
         </div>
       )}

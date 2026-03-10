@@ -38,8 +38,10 @@ type rawMessage struct {
 }
 
 type rawUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 // contentBlock represents a single block in the assistant's content array.
@@ -280,10 +282,20 @@ func attachUsage(events []ev.Event, msg rawMessage) {
 		return
 	}
 
-	payload["usage"] = map[string]int{
+	usage := map[string]int{
 		"input_tokens":  msg.Usage.InputTokens,
 		"output_tokens": msg.Usage.OutputTokens,
-		"total_tokens":  msg.Usage.InputTokens + msg.Usage.OutputTokens,
+		"total_tokens":  msg.Usage.InputTokens + msg.Usage.OutputTokens + msg.Usage.CacheCreationInputTokens + msg.Usage.CacheReadInputTokens,
+	}
+	if msg.Usage.CacheCreationInputTokens > 0 {
+		usage["cache_creation_tokens"] = msg.Usage.CacheCreationInputTokens
+	}
+	if msg.Usage.CacheReadInputTokens > 0 {
+		usage["cache_read_tokens"] = msg.Usage.CacheReadInputTokens
+	}
+	payload["usage"] = usage
+	if msg.ID != "" {
+		payload["message_id"] = msg.ID
 	}
 	if msg.Model != "" {
 		payload["model"] = msg.Model

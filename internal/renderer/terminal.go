@@ -513,9 +513,13 @@ func (r *TerminalRenderer) accumulateUsage(payload []byte) {
 	}
 	r.totalUsage.InputTokens += usage.InputTokens
 	r.totalUsage.OutputTokens += usage.OutputTokens
+	r.totalUsage.CacheCreationTokens += usage.CacheCreationTokens
+	r.totalUsage.CacheReadTokens += usage.CacheReadTokens
 	r.totalUsage.TotalTokens += usage.TotalTokens
 	r.totalUsage.InputCostUSD += usage.InputCostUSD
 	r.totalUsage.OutputCostUSD += usage.OutputCostUSD
+	r.totalUsage.CacheCreationCost += usage.CacheCreationCost
+	r.totalUsage.CacheReadCost += usage.CacheReadCost
 	r.totalUsage.TotalCostUSD += usage.TotalCostUSD
 }
 
@@ -539,6 +543,12 @@ func (r *TerminalRenderer) RenderUsageSummary() {
 	r.printSummaryLine("Total cost", formatUSD(u.TotalCostUSD), bold+green)
 	r.printSummaryLine("Input tokens", formatTokenCount(u.InputTokens), "")
 	r.printSummaryLine("Output tokens", formatTokenCount(u.OutputTokens), "")
+	if u.CacheCreationTokens > 0 {
+		r.printSummaryLine("Cache write", formatTokenCount(u.CacheCreationTokens), "")
+	}
+	if u.CacheReadTokens > 0 {
+		r.printSummaryLine("Cache read", formatTokenCount(u.CacheReadTokens), "")
+	}
 	r.printSummaryLine("Total tokens", formatTokenCount(u.TotalTokens), "")
 	fmt.Fprintln(r.w)
 }
