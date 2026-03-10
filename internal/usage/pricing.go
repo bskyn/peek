@@ -16,10 +16,18 @@ type pricing struct {
 }
 
 var exactPricing = map[string]pricing{
-	// OpenAI API pricing: https://platform.openai.com/docs/pricing
-	"gpt-5":      {InputUSDPerMillion: 1.25, OutputUSDPerMillion: 10.0},
-	"gpt-5-mini": {InputUSDPerMillion: 0.25, OutputUSDPerMillion: 2.0},
-	"gpt-5-nano": {InputUSDPerMillion: 0.05, OutputUSDPerMillion: 0.4},
+	// OpenAI API pricing: https://developers.openai.com/api/docs/pricing
+	// CacheReadUSDPerMillion = cached input rate (OpenAI cached tokens are a subset of input).
+	"gpt-5.4":     {InputUSDPerMillion: 2.50, OutputUSDPerMillion: 15.0, CacheReadUSDPerMillion: 0.25},
+	"gpt-5.4-pro": {InputUSDPerMillion: 30.0, OutputUSDPerMillion: 180.0},
+	"gpt-5.2":     {InputUSDPerMillion: 1.75, OutputUSDPerMillion: 14.0, CacheReadUSDPerMillion: 0.175},
+	"gpt-5":       {InputUSDPerMillion: 1.25, OutputUSDPerMillion: 10.0, CacheReadUSDPerMillion: 0.125},
+	"gpt-5-mini":  {InputUSDPerMillion: 0.25, OutputUSDPerMillion: 2.0, CacheReadUSDPerMillion: 0.025},
+	"gpt-5-nano":  {InputUSDPerMillion: 0.05, OutputUSDPerMillion: 0.4, CacheReadUSDPerMillion: 0.005},
+	"o3":          {InputUSDPerMillion: 2.0, OutputUSDPerMillion: 8.0, CacheReadUSDPerMillion: 0.50},
+	"o3-pro":      {InputUSDPerMillion: 20.0, OutputUSDPerMillion: 80.0},
+	"o3-mini":     {InputUSDPerMillion: 1.10, OutputUSDPerMillion: 4.40, CacheReadUSDPerMillion: 0.55},
+	"o4-mini":     {InputUSDPerMillion: 1.10, OutputUSDPerMillion: 4.40, CacheReadUSDPerMillion: 0.275},
 
 	// Anthropic API pricing: https://platform.claude.com/docs/en/about-claude/pricing
 	"claude-opus-4-6":   {InputUSDPerMillion: 5.0, OutputUSDPerMillion: 25.0, CacheWriteUSDPerMillion: 6.25, CacheReadUSDPerMillion: 0.50},
@@ -67,12 +75,28 @@ func lookupPricing(model string) (string, pricing, bool) {
 	}
 
 	switch {
+	// OpenAI GPT-5 family — most specific first to avoid prefix collisions.
+	case hasModelPrefix(normalized, "gpt-5.4-pro"):
+		return "gpt-5.4-pro", exactPricing["gpt-5.4-pro"], true
+	case hasModelPrefix(normalized, "gpt-5.4"):
+		return "gpt-5.4", exactPricing["gpt-5.4"], true
+	case hasModelPrefix(normalized, "gpt-5.2"):
+		return "gpt-5.2", exactPricing["gpt-5.2"], true
 	case hasModelPrefix(normalized, "gpt-5-nano"):
 		return "gpt-5-nano", exactPricing["gpt-5-nano"], true
 	case hasModelPrefix(normalized, "gpt-5-mini"):
 		return "gpt-5-mini", exactPricing["gpt-5-mini"], true
 	case hasModelPrefix(normalized, "gpt-5"):
 		return "gpt-5", exactPricing["gpt-5"], true
+	// OpenAI reasoning models
+	case hasModelPrefix(normalized, "o3-pro"):
+		return "o3-pro", exactPricing["o3-pro"], true
+	case hasModelPrefix(normalized, "o3-mini"):
+		return "o3-mini", exactPricing["o3-mini"], true
+	case hasModelPrefix(normalized, "o3"):
+		return "o3", exactPricing["o3"], true
+	case hasModelPrefix(normalized, "o4-mini"):
+		return "o4-mini", exactPricing["o4-mini"], true
 	// Claude: match specific version families before falling back to base
 	case hasModelPrefix(normalized, "claude-opus-4-6"):
 		return "claude-opus-4-6", exactPricing["claude-opus-4-6"], true

@@ -84,7 +84,7 @@ func TestHandleGetSessionEventsAnnotatesHistoricalUsage(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected usage payload: %+v", page.Events[1].PayloadJSON)
 	}
-	if usage["pricing_model"] != "gpt-5" {
+	if usage["pricing_model"] != "gpt-5.4" {
 		t.Fatalf("unexpected pricing model: %+v", usage)
 	}
 	if totalCost, ok := usage["total_cost_usd"].(float64); !ok || totalCost <= 0 {

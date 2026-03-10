@@ -338,9 +338,10 @@ func isApplyPatchTool(name string) bool {
 func parseTokenCountUsage(raw json.RawMessage) (map[string]int, bool) {
 	var info struct {
 		TotalTokenUsage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
+			InputTokens       int `json:"input_tokens"`
+			CachedInputTokens int `json:"cached_input_tokens"`
+			OutputTokens      int `json:"output_tokens"`
+			TotalTokens       int `json:"total_tokens"`
 		} `json:"total_token_usage"`
 	}
 	if err := json.Unmarshal(raw, &info); err != nil {
@@ -352,10 +353,17 @@ func parseTokenCountUsage(raw json.RawMessage) (map[string]int, bool) {
 	if info.TotalTokenUsage.TotalTokens == 0 {
 		return nil, false
 	}
+	// OpenAI cached_input_tokens is a subset of input_tokens.
+	// Normalize: input_tokens = non-cached portion, cache_read_tokens = cached portion.
+	nonCached := info.TotalTokenUsage.InputTokens - info.TotalTokenUsage.CachedInputTokens
+	if nonCached < 0 {
+		nonCached = 0
+	}
 	return map[string]int{
-		"input_tokens":  info.TotalTokenUsage.InputTokens,
-		"output_tokens": info.TotalTokenUsage.OutputTokens,
-		"total_tokens":  info.TotalTokenUsage.TotalTokens,
+		"input_tokens":      nonCached,
+		"output_tokens":     info.TotalTokenUsage.OutputTokens,
+		"cache_read_tokens": info.TotalTokenUsage.CachedInputTokens,
+		"total_tokens":      info.TotalTokenUsage.TotalTokens,
 	}, true
 }
 

@@ -68,16 +68,71 @@ func TestEstimatePricingByFamily(t *testing.T) {
 	}
 }
 
-func TestEstimatePricingByDotVersion(t *testing.T) {
+func TestEstimateGPT54Pricing(t *testing.T) {
 	usage := Estimate("gpt-5.4", event.Usage{
 		InputTokens:  1000,
 		OutputTokens: 200,
 	})
-	if usage.PricingModel != "gpt-5" {
+	if usage.PricingModel != "gpt-5.4" {
 		t.Fatalf("unexpected pricing model: %q", usage.PricingModel)
 	}
-	if usage.TotalCostUSD <= 0 {
-		t.Fatalf("expected positive total cost: %+v", usage)
+	// GPT-5.4: $2.50/MTok input, $15.00/MTok output
+	expectInput := 1000.0 * 2.50 / 1_000_000
+	expectOutput := 200.0 * 15.0 / 1_000_000
+	expectTotal := expectInput + expectOutput
+	if diff := usage.InputCostUSD - expectInput; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("input cost: got %f, want %f", usage.InputCostUSD, expectInput)
+	}
+	if diff := usage.TotalCostUSD - expectTotal; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("total cost: got %f, want %f", usage.TotalCostUSD, expectTotal)
+	}
+}
+
+func TestEstimateGPT52Pricing(t *testing.T) {
+	usage := Estimate("gpt-5.2-20260301", event.Usage{
+		InputTokens:  1000,
+		OutputTokens: 200,
+	})
+	if usage.PricingModel != "gpt-5.2" {
+		t.Fatalf("unexpected pricing model: %q", usage.PricingModel)
+	}
+	// GPT-5.2: $1.75/MTok input, $14.00/MTok output
+	expectInput := 1000.0 * 1.75 / 1_000_000
+	expectOutput := 200.0 * 14.0 / 1_000_000
+	if diff := usage.InputCostUSD - expectInput; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("input cost: got %f, want %f", usage.InputCostUSD, expectInput)
+	}
+	if diff := usage.OutputCostUSD - expectOutput; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("output cost: got %f, want %f", usage.OutputCostUSD, expectOutput)
+	}
+}
+
+func TestEstimateO3Pricing(t *testing.T) {
+	usage := Estimate("o3", event.Usage{
+		InputTokens:    1000,
+		OutputTokens:   200,
+		CacheReadTokens: 500,
+	})
+	if usage.PricingModel != "o3" {
+		t.Fatalf("unexpected pricing model: %q", usage.PricingModel)
+	}
+	// o3: $2.00/MTok input, $8.00/MTok output, $0.50/MTok cached input
+	expectInput := 1000.0 * 2.0 / 1_000_000
+	expectOutput := 200.0 * 8.0 / 1_000_000
+	expectCache := 500.0 * 0.50 / 1_000_000
+	expectTotal := expectInput + expectOutput + expectCache
+	if diff := usage.TotalCostUSD - expectTotal; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("total cost: got %f, want %f", usage.TotalCostUSD, expectTotal)
+	}
+}
+
+func TestEstimateO4MiniPricing(t *testing.T) {
+	usage := Estimate("o4-mini-2026", event.Usage{
+		InputTokens:  1000,
+		OutputTokens: 200,
+	})
+	if usage.PricingModel != "o4-mini" {
+		t.Fatalf("unexpected pricing model: %q", usage.PricingModel)
 	}
 }
 
@@ -182,6 +237,85 @@ func TestAnnotateClaudeMessageDedup(t *testing.T) {
 	}
 	if fourthUsage.InputTokens != 5 || fourthUsage.OutputTokens != 100 {
 		t.Fatalf("unexpected fourth usage for new message: %+v", fourthUsage)
+	}
+}
+
+func TestAnnotateCodexCachedTokenDelta(t *testing.T) {
+	annotator := NewAnnotator()
+
+	// Simulate real Codex token_count with cached_input_tokens (OpenAI format).
+	// cached_input_tokens is a subset of input_tokens.
+	first := annotator.Annotate([]event.Event{makeUsageEventWithCache(19020, 6528, 319)})[0]
+	firstUsage, ok := event.PayloadUsage(first.PayloadJSON)
+	if !ok {
+		t.Fatal("expected usage on first event")
+	}
+	// After normalization: InputTokens = 19020 - 6528 = 12492, CacheReadTokens = 6528
+	if firstUsage.InputTokens != 12492 {
+		t.Fatalf("expected non-cached input 12492, got %d", firstUsage.InputTokens)
+	}
+	if firstUsage.CacheReadTokens != 6528 {
+		t.Fatalf("expected cache read 6528, got %d", firstUsage.CacheReadTokens)
+	}
+	if firstUsage.OutputTokens != 319 {
+		t.Fatalf("expected output 319, got %d", firstUsage.OutputTokens)
+	}
+
+	// Second cumulative event — delta should be computed correctly
+	second := annotator.Annotate([]event.Event{makeUsageEventWithCache(40797, 25856, 699)})[0]
+	secondUsage, ok := event.PayloadUsage(second.PayloadJSON)
+	if !ok {
+		t.Fatal("expected usage on second event")
+	}
+	// Cumulative non-cached: 40797-25856=14941, delta: 14941-12492=2449
+	// Cumulative cache: 25856, delta: 25856-6528=19328
+	if secondUsage.InputTokens != 2449 {
+		t.Fatalf("expected input delta 2449, got %d", secondUsage.InputTokens)
+	}
+	if secondUsage.CacheReadTokens != 19328 {
+		t.Fatalf("expected cache delta 19328, got %d", secondUsage.CacheReadTokens)
+	}
+	if secondUsage.OutputTokens != 380 {
+		t.Fatalf("expected output delta 380, got %d", secondUsage.OutputTokens)
+	}
+}
+
+func TestEstimateGPT5CachePricing(t *testing.T) {
+	// Simulate normalized Codex usage: InputTokens is non-cached, CacheReadTokens is cached
+	usage := Estimate("gpt-5", event.Usage{
+		InputTokens:    12492,
+		OutputTokens:   319,
+		CacheReadTokens: 6528,
+	})
+	if usage.PricingModel != "gpt-5" {
+		t.Fatalf("unexpected pricing model: %q", usage.PricingModel)
+	}
+	// GPT-5: $1.25/MTok input, $10.00/MTok output, $0.125/MTok cached input
+	expectInput := 12492.0 * 1.25 / 1_000_000
+	expectOutput := 319.0 * 10.0 / 1_000_000
+	expectCache := 6528.0 * 0.125 / 1_000_000
+	expectTotal := expectInput + expectOutput + expectCache
+	if diff := usage.InputCostUSD - expectInput; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("input cost: got %f, want %f", usage.InputCostUSD, expectInput)
+	}
+	if diff := usage.CacheReadCost - expectCache; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("cache read cost: got %f, want %f", usage.CacheReadCost, expectCache)
+	}
+	if diff := usage.TotalCostUSD - expectTotal; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("total cost: got %f, want %f", usage.TotalCostUSD, expectTotal)
+	}
+}
+
+func makeUsageEventWithCache(inputTokens, cachedInputTokens, outputTokens int) event.Event {
+	return event.Event{
+		Type: event.EventProgress,
+		PayloadJSON: []byte(fmt.Sprintf(
+			`{"subtype":"token_count","model":"gpt-5.4","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":%d,"output_tokens":%d,"total_tokens":%d}}}`,
+			inputTokens,
+			cachedInputTokens,
+			outputTokens,
+			inputTokens+outputTokens,
+		)),
 	}
 }
 

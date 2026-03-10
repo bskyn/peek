@@ -133,9 +133,10 @@ func cumulativeDelta(current event.Usage, previous event.Usage, hasPrevious bool
 		return current
 	}
 	return event.Usage{
-		InputTokens:  max(current.InputTokens-previous.InputTokens, 0),
-		OutputTokens: max(current.OutputTokens-previous.OutputTokens, 0),
-		TotalTokens:  max(current.TotalTokens-previous.TotalTokens, 0),
+		InputTokens:    max(current.InputTokens-previous.InputTokens, 0),
+		OutputTokens:   max(current.OutputTokens-previous.OutputTokens, 0),
+		CacheReadTokens: max(current.CacheReadTokens-previous.CacheReadTokens, 0),
+		TotalTokens:    max(current.TotalTokens-previous.TotalTokens, 0),
 	}.Normalized()
 }
 

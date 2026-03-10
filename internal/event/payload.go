@@ -108,16 +108,35 @@ func PayloadUsage(payload json.RawMessage) (Usage, bool) {
 }
 
 // PayloadTokenCountUsage extracts the cumulative token_count payload, if present.
+// OpenAI reports cached_input_tokens as a subset of input_tokens. We normalize
+// so that InputTokens = non-cached portion and CacheReadTokens = cached portion,
+// making the shared Usage/pricing math work for both providers.
 func PayloadTokenCountUsage(payload json.RawMessage) (Usage, bool) {
 	var p struct {
 		Info struct {
-			TotalTokenUsage Usage `json:"total_token_usage"`
+			TotalTokenUsage struct {
+				InputTokens       int `json:"input_tokens"`
+				CachedInputTokens int `json:"cached_input_tokens"`
+				OutputTokens      int `json:"output_tokens"`
+				TotalTokens       int `json:"total_tokens"`
+			} `json:"total_token_usage"`
 		} `json:"info"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return Usage{}, false
 	}
-	usage := p.Info.TotalTokenUsage.Normalized()
+	raw := p.Info.TotalTokenUsage
+	nonCached := raw.InputTokens - raw.CachedInputTokens
+	if nonCached < 0 {
+		nonCached = 0
+	}
+	usage := Usage{
+		InputTokens:    nonCached,
+		OutputTokens:   raw.OutputTokens,
+		CacheReadTokens: raw.CachedInputTokens,
+		TotalTokens:    raw.TotalTokens,
+	}
+	usage = usage.Normalized()
 	if !usage.HasTokens() {
 		return Usage{}, false
 	}
