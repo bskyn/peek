@@ -1,27 +1,27 @@
-import { useCallback, useEffect } from "react";
-import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useCallback, useEffect } from 'react';
+import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 
-import { CostSidebar } from "../components/CostSidebar";
-import { EmptyPanel } from "../components/EmptyPanel";
-import { SessionCard } from "../components/SessionCard";
-import { TimelineCard } from "../components/TimelineCard";
-import { useSessionDetail } from "../hooks/useSessionDetail";
-import type { TimelineSort } from "../hooks/useSessionDetail";
-import { useSessions } from "../hooks/useSessions";
-import { buildHeaderTitle, deriveDisplayStatus, formatDateTime } from "../lib/format";
-import { openStream } from "../lib/stream";
+import { CostSidebar } from '../components/CostSidebar';
+import { EmptyPanel } from '../components/EmptyPanel';
+import { SessionCard } from '../components/SessionCard';
+import { TimelineCard } from '../components/TimelineCard';
+import { useSessionDetail } from '../hooks/useSessionDetail';
+import type { TimelineSort } from '../hooks/useSessionDetail';
+import { useSessions } from '../hooks/useSessions';
+import { buildHeaderTitle, deriveDisplayStatus, formatDateTime } from '../lib/format';
+import { openStream } from '../lib/stream';
 
 export function App() {
   const routerState = useRouterState();
   const tanstackNavigate = useNavigate();
 
-  const sessionMatch = routerState.matches.find((m) => m.routeId === "/sessions/$sessionId");
+  const sessionMatch = routerState.matches.find((m) => m.routeId === '/sessions/$sessionId');
   const selectedSessionID =
-    (sessionMatch?.params as Record<string, string> | undefined)?.sessionId ?? "";
+    (sessionMatch?.params as Record<string, string> | undefined)?.sessionId ?? '';
 
   const navigateToSession = useCallback(
     (sessionId: string) => {
-      tanstackNavigate({ to: "/sessions/$sessionId", params: { sessionId } });
+      tanstackNavigate({ to: '/sessions/$sessionId', params: { sessionId } });
     },
     [tanstackNavigate],
   );
@@ -52,9 +52,9 @@ export function App() {
   // Keep session metadata in sync via SSE
   useEffect(() => {
     return openStream(
-      "",
+      '',
       (envelope) => {
-        if (envelope.type !== "session_upsert" || envelope.session == null) return;
+        if (envelope.type !== 'session_upsert' || envelope.session == null) return;
         const upserted = envelope.session;
         setDetail((current) => {
           if (current == null || current.session.id !== upserted.id) return current;
@@ -65,7 +65,7 @@ export function App() {
     );
   }, [setDetail]);
 
-  const selectedIsLive = selectedSessionID !== "" && selectedSessionID === activeSessionID;
+  const selectedIsLive = selectedSessionID !== '' && selectedSessionID === activeSessionID;
   const headerTitle = buildHeaderTitle(detail, events, selectedSessionID);
   const status = deriveDisplayStatus(
     selectedSessionID,
@@ -74,7 +74,7 @@ export function App() {
     detailStreamStatus,
   );
 
-  const hasSession = selectedSessionID !== "";
+  const hasSession = selectedSessionID !== '';
   const showDetail = hasSession && !isLoadingDetail && detail != null;
 
   return (
@@ -93,7 +93,7 @@ export function App() {
       {/* Main workspace */}
       <main
         className={`grid min-h-0 flex-1 gap-3 ${
-          showDetail ? "grid-cols-[280px_1fr_260px]" : "grid-cols-[280px_1fr]"
+          showDetail ? 'grid-cols-[280px_1fr_260px]' : 'grid-cols-[280px_1fr]'
         }`}
       >
         {/* Session sidebar */}
@@ -108,10 +108,10 @@ export function App() {
           {isLoadingSessions ? (
             <EmptyPanel title="Loading sessions" body="Reading stored session history." />
           ) : null}
-          {!isLoadingSessions && sessionsError !== "" ? (
+          {!isLoadingSessions && sessionsError !== '' ? (
             <EmptyPanel title="Sessions unavailable" body={sessionsError} />
           ) : null}
-          {!isLoadingSessions && sessionsError === "" && sessions.length === 0 ? (
+          {!isLoadingSessions && sessionsError === '' && sessions.length === 0 ? (
             <EmptyPanel
               title="No sessions yet"
               body="Start `peek claude` or `peek codex` and the list will appear here."
@@ -143,7 +143,7 @@ export function App() {
             <EmptyPanel title="Loading timeline" body="Fetching session metadata and events." />
           ) : null}
 
-          {hasSession && !isLoadingDetail && detailError !== "" ? (
+          {hasSession && !isLoadingDetail && detailError !== '' ? (
             <EmptyPanel title="Timeline unavailable" body={detailError} />
           ) : null}
 

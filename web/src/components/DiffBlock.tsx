@@ -1,15 +1,15 @@
-import { useMemo } from "react";
-import { Diff, Hunk, parseDiff } from "react-diff-view";
-import { structuredPatch } from "diff";
+import { useMemo } from 'react';
+import { Diff, Hunk, parseDiff } from 'react-diff-view';
+import { structuredPatch } from 'diff';
 
 function buildUnifiedDiff(oldText: string, newText: string): string {
-  const patch = structuredPatch("a", "b", oldText, newText, "", "", {
+  const patch = structuredPatch('a', 'b', oldText, newText, '', '', {
     context: 3,
   });
 
-  if (patch.hunks.length === 0) return "";
+  if (patch.hunks.length === 0) return '';
 
-  const lines: string[] = ["--- a", "+++ b"];
+  const lines: string[] = ['--- a', '+++ b'];
 
   for (const hunk of patch.hunks) {
     lines.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
@@ -18,11 +18,11 @@ function buildUnifiedDiff(oldText: string, newText: string): string {
     }
   }
 
-  return lines.join("\n") + "\n";
+  return lines.join('\n') + '\n';
 }
 
 function safeParseDiff(diffText: string) {
-  if (diffText === "") return [];
+  if (diffText === '') return [];
   try {
     return parseDiff(diffText);
   } catch {
@@ -47,8 +47,8 @@ export function DiffBlock(props: DiffBlockProps) {
 
   // Fallback: show raw text if parsing fails
   if (files.length === 0 || files[0].hunks.length === 0) {
-    const fallbackText = props.rawDiff ?? props.editStrings?.newText ?? "(empty)";
-    if (fallbackText === "" || fallbackText === "(empty)") {
+    const fallbackText = props.rawDiff ?? props.editStrings?.newText ?? '(empty)';
+    if (fallbackText === '' || fallbackText === '(empty)') {
       return (
         <pre className="bg-mantle p-2.5 font-mono text-[11px] leading-relaxed text-subtext-0">
           (empty)
@@ -58,11 +58,11 @@ export function DiffBlock(props: DiffBlockProps) {
     // Render raw diff with line coloring as fallback
     return (
       <pre className="max-h-80 overflow-auto bg-mantle py-2.5 font-mono text-[11px] leading-relaxed">
-        {fallbackText.split("\n").map((line, i) => {
-          let color = "text-subtext-0";
-          if (line.startsWith("+")) color = "text-green";
-          else if (line.startsWith("-")) color = "text-red";
-          else if (line.startsWith("@@")) color = "text-mauve";
+        {fallbackText.split('\n').map((line, i) => {
+          let color = 'text-subtext-0';
+          if (line.startsWith('+')) color = 'text-green';
+          else if (line.startsWith('-')) color = 'text-red';
+          else if (line.startsWith('@@')) color = 'text-mauve';
           return (
             <div key={i} className={`px-2.5 ${color}`}>
               {line}

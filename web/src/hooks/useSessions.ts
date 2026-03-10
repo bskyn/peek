@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState } from 'react';
 
-import { fetchSessions, fetchViewerStatus } from "../lib/api";
-import { openStream } from "../lib/stream";
-import type { LiveEnvelope, SessionSummary, StreamStatus } from "../lib/types";
+import { fetchSessions, fetchViewerStatus } from '../lib/api';
+import { openStream } from '../lib/stream';
+import type { LiveEnvelope, SessionSummary, StreamStatus } from '../lib/types';
 
 function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
   return [...sessions].sort((a, b) => {
@@ -25,10 +25,10 @@ function upsertSession(current: SessionSummary[], next: SessionSummary): Session
 
 export function useSessions() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [error, setError] = useState("");
+  const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [activeSessionID, setActiveSessionID] = useState("");
-  const [streamStatus, setStreamStatus] = useState<StreamStatus>("connecting");
+  const [activeSessionID, setActiveSessionID] = useState('');
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('connecting');
 
   // Initial fetch — merges with any SSE data that arrived first
   useEffect(() => {
@@ -40,12 +40,12 @@ export function useSessions() {
         if (cancelled) return;
         // Merge fetched data with any SSE updates that arrived during the fetch
         setSessions((current) => mergeSessions(nextSessions, current));
-        setActiveSessionID((current) => current || (status.active_session_id ?? ""));
-        setError("");
+        setActiveSessionID((current) => current || (status.active_session_id ?? ''));
+        setError('');
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Unknown error");
+        setError(err instanceof Error ? err.message : 'Unknown error');
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -59,13 +59,13 @@ export function useSessions() {
   // Live stream for session list
   useEffect(() => {
     return openStream(
-      "",
+      '',
       (envelope: LiveEnvelope) => {
-        if (envelope.type === "active_session") {
-          setActiveSessionID(envelope.active_session_id ?? "");
+        if (envelope.type === 'active_session') {
+          setActiveSessionID(envelope.active_session_id ?? '');
           return;
         }
-        if (envelope.type !== "session_upsert" || envelope.session == null) return;
+        if (envelope.type !== 'session_upsert' || envelope.session == null) return;
         setSessions((cur) => sortSessions(upsertSession(cur, envelope.session!)));
       },
       setStreamStatus,

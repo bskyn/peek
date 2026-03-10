@@ -1,5 +1,5 @@
-import type { ViewerEvent } from "../lib/types";
-import { aggregateUsage, formatTokenCount, formatUSD } from "../lib/format";
+import type { ViewerEvent } from '../lib/types';
+import { aggregateUsage, formatTokenCount, formatUSD } from '../lib/format';
 
 export function CostSidebar({ events }: { events: ViewerEvent[] }) {
   const usage = aggregateUsage(events);
@@ -64,7 +64,7 @@ function StatRow({
   return (
     <div className="flex items-center justify-between">
       <span className="text-[11px] text-overlay-0">{label}</span>
-      <span className={`font-mono text-[11px] tabular-nums ${valueClass ?? "text-text"}`}>
+      <span className={`font-mono text-[11px] tabular-nums ${valueClass ?? 'text-text'}`}>
         {value}
       </span>
     </div>

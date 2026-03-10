@@ -1,4 +1,4 @@
-import type { EventPage, SessionDetail, SessionSummary, ViewerStatus } from "./types";
+import type { EventPage, SessionDetail, SessionSummary, ViewerStatus } from './types';
 
 async function requestJSON<T>(input: string): Promise<T> {
   const response = await fetch(input);
@@ -10,7 +10,7 @@ async function requestJSON<T>(input: string): Promise<T> {
 }
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
-  const payload = await requestJSON<{ sessions: SessionSummary[] }>("/api/sessions");
+  const payload = await requestJSON<{ sessions: SessionSummary[] }>('/api/sessions');
   return payload.sessions;
 }
 
@@ -23,5 +23,5 @@ export async function fetchSessionEvents(sessionID: string): Promise<EventPage> 
 }
 
 export async function fetchViewerStatus(): Promise<ViewerStatus> {
-  return requestJSON<ViewerStatus>("/api/status");
+  return requestJSON<ViewerStatus>('/api/status');
 }

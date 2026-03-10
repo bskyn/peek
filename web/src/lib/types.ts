@@ -21,14 +21,14 @@ export type ViewerEvent = {
   timestamp: string;
   seq: number;
   type:
-    | "user_message"
-    | "assistant_thinking"
-    | "assistant_message"
-    | "tool_call"
-    | "tool_result"
-    | "progress"
-    | "system"
-    | "error";
+    | 'user_message'
+    | 'assistant_thinking'
+    | 'assistant_message'
+    | 'tool_call'
+    | 'tool_result'
+    | 'progress'
+    | 'system'
+    | 'error';
   role?: string;
   parent_event_id?: string;
   payload_json: Record<string, unknown>;
@@ -42,19 +42,19 @@ export type EventPage = {
 
 export type LiveEnvelope =
   | {
-      type: "session_upsert";
+      type: 'session_upsert';
       session?: SessionSummary;
     }
   | {
-      type: "event_append";
+      type: 'event_append';
       event?: ViewerEvent;
     }
   | {
-      type: "active_session";
+      type: 'active_session';
       active_session_id?: string;
     };
 
-export type StreamStatus = "connecting" | "live" | "retrying" | "disconnected";
+export type StreamStatus = 'connecting' | 'live' | 'retrying' | 'disconnected';
 
 export type ViewerStatus = {
   active_session_id: string;

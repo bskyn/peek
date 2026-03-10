@@ -1,94 +1,94 @@
-import type { ViewerEvent } from "../lib/types";
+import type { ViewerEvent } from '../lib/types';
 import {
   titleForEvent,
   describeEvent,
   extraPayload,
   formatDateTime,
   usageSummary,
-} from "../lib/format";
-import { DiffBlock } from "./DiffBlock";
+} from '../lib/format';
+import { DiffBlock } from './DiffBlock';
 
 function isUserEvent(type: string): boolean {
-  return type === "user_message";
+  return type === 'user_message';
 }
 
 function headerColor(type: string): string {
   switch (type) {
-    case "user_message":
-      return "text-peach";
-    case "assistant_message":
-      return "text-blue";
-    case "assistant_thinking":
-      return "text-lavender";
-    case "tool_call":
-    case "tool_result":
-      return "text-sapphire";
-    case "error":
-      return "text-red";
+    case 'user_message':
+      return 'text-peach';
+    case 'assistant_message':
+      return 'text-blue';
+    case 'assistant_thinking':
+      return 'text-lavender';
+    case 'tool_call':
+    case 'tool_result':
+      return 'text-sapphire';
+    case 'error':
+      return 'text-red';
     default:
-      return "text-overlay-1";
+      return 'text-overlay-1';
   }
 }
 
 type DiffInfo =
-  | { kind: "diff"; diffText: string; filePath: string; operation: string }
-  | { kind: "delete"; filePath: string };
+  | { kind: 'diff'; diffText: string; filePath: string; operation: string }
+  | { kind: 'delete'; filePath: string };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (value == null || typeof value !== "object") return null;
+  if (value == null || typeof value !== 'object') return null;
   return value as Record<string, unknown>;
 }
 
 function stringProp(record: Record<string, unknown> | null, key: string): string {
-  if (record == null) return "";
+  if (record == null) return '';
   const value = record[key];
-  return typeof value === "string" ? value : "";
+  return typeof value === 'string' ? value : '';
 }
 
 function extractDiffInfo(event: ViewerEvent): DiffInfo | null {
-  if (event.type !== "tool_call") return null;
+  if (event.type !== 'tool_call') return null;
 
   const toolName =
-    typeof event.payload_json.tool_name === "string" ? event.payload_json.tool_name : "";
+    typeof event.payload_json.tool_name === 'string' ? event.payload_json.tool_name : '';
   const payload = asRecord(event.payload_json);
 
   // Codex apply_patch: raw unified diff or delete operation
-  if (toolName === "apply_patch" || toolName.endsWith(".apply_patch")) {
+  if (toolName === 'apply_patch' || toolName.endsWith('.apply_patch')) {
     const input = asRecord(payload?.input) ?? payload;
-    const diff = stringProp(input, "diff");
-    const filePath = stringProp(input, "file_path");
-    const operation = stringProp(input, "operation");
+    const diff = stringProp(input, 'diff');
+    const filePath = stringProp(input, 'file_path');
+    const operation = stringProp(input, 'operation');
 
-    if (operation === "delete") {
-      return { kind: "delete", filePath };
+    if (operation === 'delete') {
+      return { kind: 'delete', filePath };
     }
-    if (diff !== "") {
-      return { kind: "diff", diffText: ensureUnifiedHeaders(diff), filePath, operation };
+    if (diff !== '') {
+      return { kind: 'diff', diffText: ensureUnifiedHeaders(diff), filePath, operation };
     }
     return null;
   }
 
   // Claude Edit/Write: old_string/new_string or content
   if (
-    toolName === "Edit" ||
-    toolName === "edit_file" ||
-    toolName === "Write" ||
-    toolName === "write_file"
+    toolName === 'Edit' ||
+    toolName === 'edit_file' ||
+    toolName === 'Write' ||
+    toolName === 'write_file'
   ) {
     const rec = asRecord(payload?.input);
     if (rec == null) return null;
     const filePath =
-      typeof rec.file_path === "string"
+      typeof rec.file_path === 'string'
         ? rec.file_path
-        : typeof rec.path === "string"
+        : typeof rec.path === 'string'
           ? rec.path
-          : "";
+          : '';
 
-    if (typeof rec.old_string === "string" && typeof rec.new_string === "string") {
-      return { kind: "diff", diffText: "", filePath, operation: "edit" };
+    if (typeof rec.old_string === 'string' && typeof rec.new_string === 'string') {
+      return { kind: 'diff', diffText: '', filePath, operation: 'edit' };
     }
-    if (typeof rec.content === "string") {
-      return { kind: "diff", diffText: "", filePath, operation: "create" };
+    if (typeof rec.content === 'string') {
+      return { kind: 'diff', diffText: '', filePath, operation: 'create' };
     }
   }
 
@@ -99,18 +99,18 @@ function extractDiffInfo(event: ViewerEvent): DiffInfo | null {
 function extractEditStrings(event: ViewerEvent): { oldText: string; newText: string } | null {
   const rec = asRecord(asRecord(event.payload_json)?.input);
   if (rec == null) return null;
-  if (typeof rec.old_string === "string" && typeof rec.new_string === "string") {
+  if (typeof rec.old_string === 'string' && typeof rec.new_string === 'string') {
     return { oldText: rec.old_string, newText: rec.new_string };
   }
-  if (typeof rec.content === "string") {
-    return { oldText: "", newText: rec.content };
+  if (typeof rec.content === 'string') {
+    return { oldText: '', newText: rec.content };
   }
   return null;
 }
 
 // Ensure raw diff has unified headers so parseDiff can handle it
 function ensureUnifiedHeaders(diff: string): string {
-  if (diff.startsWith("---")) return diff;
+  if (diff.startsWith('---')) return diff;
   return `--- a\n+++ b\n${diff}`;
 }
 
@@ -126,7 +126,7 @@ export function TimelineCard({ event }: { event: ViewerEvent }) {
   return (
     <article
       className={`rounded-lg border p-3 ${
-        isUser ? "border-surface-0 bg-mantle" : "border-border bg-crust/50"
+        isUser ? 'border-surface-0 bg-mantle' : 'border-border bg-crust/50'
       }`}
     >
       <div className="flex items-baseline justify-between gap-3">
@@ -161,25 +161,25 @@ export function TimelineCard({ event }: { event: ViewerEvent }) {
 
       {diffInfo != null ? (
         <div className="mt-2 overflow-hidden rounded-md">
-          {diffInfo.filePath !== "" ? (
+          {diffInfo.filePath !== '' ? (
             <div className="flex items-center gap-2 bg-crust px-2.5 py-1 font-mono text-[10px] text-overlay-1">
               <span>{diffInfo.filePath}</span>
-              {diffInfo.kind === "delete" ? (
+              {diffInfo.kind === 'delete' ? (
                 <span className="rounded-sm bg-red/15 px-1.5 py-0.5 text-[9px] uppercase text-red">
                   deleted
                 </span>
-              ) : "operation" in diffInfo && diffInfo.operation !== "" ? (
+              ) : 'operation' in diffInfo && diffInfo.operation !== '' ? (
                 <span className="rounded-sm bg-surface-0 px-1.5 py-0.5 text-[9px] uppercase text-overlay-0">
                   {diffInfo.operation}
                 </span>
               ) : null}
             </div>
           ) : null}
-          {diffInfo.kind === "delete" ? (
+          {diffInfo.kind === 'delete' ? (
             <div className="bg-red/5 px-2.5 py-2 font-mono text-[11px] text-red/80">
               File deleted
             </div>
-          ) : diffInfo.diffText !== "" ? (
+          ) : diffInfo.diffText !== '' ? (
             // Codex raw diff or pre-formatted diff — parse directly
             <DiffBlock rawDiff={diffInfo.diffText} />
           ) : (
@@ -187,17 +187,17 @@ export function TimelineCard({ event }: { event: ViewerEvent }) {
             <DiffBlock editStrings={extractEditStrings(event)} />
           )}
         </div>
-      ) : description !== "" ? (
+      ) : description !== '' ? (
         <pre
           className={`mt-2 max-h-80 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md p-2.5 font-mono text-[11px] leading-relaxed ${
-            isUser ? "bg-crust text-subtext-1" : "bg-mantle text-subtext-0"
+            isUser ? 'bg-crust text-subtext-1' : 'bg-mantle text-subtext-0'
           }`}
         >
           {description}
         </pre>
       ) : null}
 
-      {extra !== "" ? (
+      {extra !== '' ? (
         <details className="mt-2">
           <summary className="cursor-pointer text-[11px] text-blue hover:text-sapphire">
             Expand payload

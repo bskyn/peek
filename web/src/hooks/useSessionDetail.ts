@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from 'react';
 
-import { fetchSessionDetail, fetchSessionEvents } from "../lib/api";
-import { openStream } from "../lib/stream";
-import type { LiveEnvelope, SessionDetail, StreamStatus, ViewerEvent } from "../lib/types";
+import { fetchSessionDetail, fetchSessionEvents } from '../lib/api';
+import { openStream } from '../lib/stream';
+import type { LiveEnvelope, SessionDetail, StreamStatus, ViewerEvent } from '../lib/types';
 
 const AUTO_SCROLL_THRESHOLD = 96;
-export type TimelineSort = "asc" | "desc";
+export type TimelineSort = 'asc' | 'desc';
 
 function mergeEvents(base: ViewerEvent[], incoming: ViewerEvent[]): ViewerEvent[] {
   const bySeq = new Map<number, ViewerEvent>();
@@ -21,7 +21,7 @@ function appendUniqueEvent(current: ViewerEvent[], next: ViewerEvent): ViewerEve
 
 function sortTimelineEvents(events: ViewerEvent[], direction: TimelineSort): ViewerEvent[] {
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
-  return direction === "asc" ? sorted : sorted.reverse();
+  return direction === 'asc' ? sorted : sorted.reverse();
 }
 
 export function useSessionDetail(selectedSessionID: string) {
@@ -29,23 +29,23 @@ export function useSessionDetail(selectedSessionID: string) {
   const [events, setEvents] = useState<ViewerEvent[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
-  const [error, setError] = useState("");
+  const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [streamStatus, setStreamStatus] = useState<StreamStatus>("disconnected");
-  const [timelineSort, setTimelineSort] = useState<TimelineSort>("asc");
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('disconnected');
+  const [timelineSort, setTimelineSort] = useState<TimelineSort>('asc');
 
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
 
   // Fetch detail + events on session change
   useEffect(() => {
-    if (selectedSessionID === "") {
+    if (selectedSessionID === '') {
       setDetail(null);
       setEvents([]);
       setHasMore(false);
       setTotalCount(0);
-      setError("");
-      setStreamStatus("disconnected");
+      setError('');
+      setStreamStatus('disconnected');
       return;
     }
 
@@ -54,7 +54,7 @@ export function useSessionDetail(selectedSessionID: string) {
     setEvents([]);
     setHasMore(false);
     setTotalCount(0);
-    setError("");
+    setError('');
 
     let cancelled = false;
     setIsLoading(true);
@@ -67,7 +67,7 @@ export function useSessionDetail(selectedSessionID: string) {
         setHasMore(page.has_more);
         // Merge with any events that arrived via SSE during the fetch
         setEvents((current) => mergeEvents(page.events, current));
-        setError("");
+        setError('');
         stickToBottomRef.current = true;
       })
       .catch((err: unknown) => {
@@ -76,7 +76,7 @@ export function useSessionDetail(selectedSessionID: string) {
         setEvents([]);
         setHasMore(false);
         setTotalCount(0);
-        setError(err instanceof Error ? err.message : "Unknown error");
+        setError(err instanceof Error ? err.message : 'Unknown error');
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -89,12 +89,12 @@ export function useSessionDetail(selectedSessionID: string) {
 
   // Live stream for events
   useEffect(() => {
-    if (selectedSessionID === "") return;
+    if (selectedSessionID === '') return;
 
     return openStream(
       `session_id=${encodeURIComponent(selectedSessionID)}`,
       (envelope: LiveEnvelope) => {
-        if (envelope.type !== "event_append" || envelope.event == null) return;
+        if (envelope.type !== 'event_append' || envelope.event == null) return;
         setEvents((cur) => appendUniqueEvent(cur, envelope.event!));
       },
       setStreamStatus,
@@ -107,7 +107,7 @@ export function useSessionDetail(selectedSessionID: string) {
     if (node == null) return;
 
     const updateStickiness = () => {
-      if (timelineSort === "desc") {
+      if (timelineSort === 'desc') {
         // In desc mode, "sticky" means pinned to the top (newest first)
         stickToBottomRef.current = node.scrollTop < AUTO_SCROLL_THRESHOLD;
       } else {
@@ -117,15 +117,15 @@ export function useSessionDetail(selectedSessionID: string) {
     };
 
     updateStickiness();
-    node.addEventListener("scroll", updateStickiness);
-    return () => node.removeEventListener("scroll", updateStickiness);
+    node.addEventListener('scroll', updateStickiness);
+    return () => node.removeEventListener('scroll', updateStickiness);
   }, [selectedSessionID, timelineSort]);
 
   // Auto-scroll on new events
   useEffect(() => {
     const node = timelineRef.current;
     if (node == null || !stickToBottomRef.current) return;
-    if (timelineSort === "desc") {
+    if (timelineSort === 'desc') {
       node.scrollTop = 0;
       return;
     }

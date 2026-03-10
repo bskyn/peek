@@ -1,5 +1,5 @@
-import type { SessionSummary } from "../lib/types";
-import { formatDateTime } from "../lib/format";
+import type { SessionSummary } from '../lib/types';
+import { formatDateTime } from '../lib/format';
 
 export function SessionCard({
   session,
@@ -11,11 +11,11 @@ export function SessionCard({
   onClick: () => void;
 }) {
   const sourceBadgeClass =
-    session.source === "claude"
-      ? "bg-peach/10 text-peach"
-      : session.source === "codex"
-        ? "bg-blue/10 text-blue"
-        : "bg-surface-0 text-overlay-0";
+    session.source === 'claude'
+      ? 'bg-peach/10 text-peach'
+      : session.source === 'codex'
+        ? 'bg-blue/10 text-blue'
+        : 'bg-surface-0 text-overlay-0';
 
   return (
     <button
@@ -23,8 +23,8 @@ export function SessionCard({
       onClick={onClick}
       className={`group w-full cursor-pointer rounded-lg border p-2.5 text-left transition-colors ${
         isSelected
-          ? "border-lavender/30 bg-lavender/8"
-          : "border-border bg-mantle hover:border-surface-1 hover:bg-surface-0/40"
+          ? 'border-lavender/30 bg-lavender/8'
+          : 'border-border bg-mantle hover:border-surface-1 hover:bg-surface-0/40'
       }`}
     >
       <div className="flex items-center justify-between gap-2">
@@ -42,7 +42,7 @@ export function SessionCard({
         {session.source_session_id || session.id}
       </p>
       <p className="mt-0.5 truncate text-[11px] text-overlay-1">
-        {session.project_path || "Unknown project"}
+        {session.project_path || 'Unknown project'}
       </p>
       <p className="mt-0.5 text-[10px] tabular-nums text-overlay-0">{session.event_count} events</p>
     </button>

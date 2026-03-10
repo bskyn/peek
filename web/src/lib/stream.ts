@@ -1,17 +1,17 @@
-import type { LiveEnvelope, StreamStatus } from "./types";
+import type { LiveEnvelope, StreamStatus } from './types';
 
 export function openStream(
   query: string,
   onEnvelope: (envelope: LiveEnvelope) => void,
   onStatus: (status: StreamStatus) => void,
 ): () => void {
-  const target = query === "" ? "/api/stream" : `/api/stream?${query}`;
+  const target = query === '' ? '/api/stream' : `/api/stream?${query}`;
   const source = new EventSource(target);
 
-  onStatus("connecting");
+  onStatus('connecting');
 
   source.onopen = () => {
-    onStatus("live");
+    onStatus('live');
   };
 
   source.onmessage = (event) => {
@@ -23,11 +23,11 @@ export function openStream(
   };
 
   source.onerror = () => {
-    onStatus("retrying");
+    onStatus('retrying');
   };
 
   return () => {
-    onStatus("disconnected");
+    onStatus('disconnected');
     source.close();
   };
 }
