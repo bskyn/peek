@@ -1,77 +1,35 @@
 BINARY := peek
+BIN_DIR := bin
+WEB_DIR := web
+WEB_NODE_MODULES_STAMP := $(WEB_DIR)/node_modules/.package-lock-stamp
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-X github.com/bskyn/peek/internal/cli.version=$(VERSION)"
-GOBIN ?= $(CURDIR)/bin
-GOLANGCI_LINT_VERSION := v1.64.8
-GOLANGCI_LINT := $(GOBIN)/golangci-lint
-GOLANGCI_LINT_VERSION_STRIPPED := $(patsubst v%,%,$(GOLANGCI_LINT_VERSION))
-WEB_DIR := web
-WEB_HAS_BUN := $(shell command -v bun >/dev/null 2>&1 && echo 1 || echo 0)
-UNAME_S := $(shell uname -s)
-UNAME_M := $(shell uname -m)
 
-ifeq ($(UNAME_S),Darwin)
-GOLANGCI_LINT_OS := darwin
-else ifeq ($(UNAME_S),Linux)
-GOLANGCI_LINT_OS := linux
-else
-$(error unsupported OS $(UNAME_S) for golangci-lint install)
-endif
+.PHONY: install build run test lint clean
 
-ifeq ($(UNAME_M),x86_64)
-GOLANGCI_LINT_ARCH := amd64
-else ifeq ($(UNAME_M),arm64)
-GOLANGCI_LINT_ARCH := arm64
-else ifeq ($(UNAME_M),aarch64)
-GOLANGCI_LINT_ARCH := arm64
-else
-$(error unsupported ARCH $(UNAME_M) for golangci-lint install)
-endif
-
-.PHONY: build test lint lint-install run clean release-dry-run web-install web-build
-
-build: web-build
-	go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/peek
-
-test: web-build
-	go test -race ./...
-
-lint: web-build $(GOLANGCI_LINT)
-	$(GOLANGCI_LINT) run ./cmd/... ./internal/...
-
-lint-install: $(GOLANGCI_LINT)
-
-web-install:
-ifeq ($(WEB_HAS_BUN),1)
-	cd $(WEB_DIR) && bun install
-else
+$(WEB_NODE_MODULES_STAMP): $(WEB_DIR)/package.json $(WEB_DIR)/package-lock.json
 	npm --prefix $(WEB_DIR) install
-endif
+	touch $(WEB_NODE_MODULES_STAMP)
 
-web-build:
-ifeq ($(WEB_HAS_BUN),1)
-	cd $(WEB_DIR) && bun run build
-else
+install: $(WEB_NODE_MODULES_STAMP)
+
+build: $(WEB_NODE_MODULES_STAMP)
 	npm --prefix $(WEB_DIR) run build
-endif
+	mkdir -p $(BIN_DIR)
+	go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY) ./cmd/peek
 
-$(GOLANGCI_LINT):
-	@mkdir -p $(GOBIN)
-	@tmpdir=$$(mktemp -d); \
-	archive="golangci-lint-$(GOLANGCI_LINT_VERSION_STRIPPED)-$(GOLANGCI_LINT_OS)-$(GOLANGCI_LINT_ARCH).tar.gz"; \
-	url="https://github.com/golangci/golangci-lint/releases/download/$(GOLANGCI_LINT_VERSION)/$$archive"; \
-	echo "Downloading $$url"; \
-	curl -fsSL "$$url" -o "$$tmpdir/$$archive"; \
-	tar -xzf "$$tmpdir/$$archive" -C "$$tmpdir"; \
-	cp "$$tmpdir/golangci-lint-$(GOLANGCI_LINT_VERSION_STRIPPED)-$(GOLANGCI_LINT_OS)-$(GOLANGCI_LINT_ARCH)/golangci-lint" "$(GOLANGCI_LINT)"; \
-	chmod +x "$(GOLANGCI_LINT)"; \
-	rm -rf "$$tmpdir"
+run: build
+	./$(BIN_DIR)/$(BINARY) $(ARGS)
 
-run:
-	go run $(LDFLAGS) ./cmd/peek $(ARGS)
+test: $(WEB_NODE_MODULES_STAMP)
+	npm --prefix $(WEB_DIR) run build
+	go test -race ./cmd/... ./internal/...
+
+lint: $(WEB_NODE_MODULES_STAMP)
+	npm --prefix $(WEB_DIR) run lint
+	npm --prefix $(WEB_DIR) run typecheck
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint is required on PATH"; exit 1; }
+	golangci-lint run ./cmd/... ./internal/...
 
 clean:
-	rm -rf bin/ dist/
-
-release-dry-run:
-	goreleaser release --snapshot --skip=publish --clean
+	rm -rf $(BIN_DIR) $(WEB_DIR)/dist

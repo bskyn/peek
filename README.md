@@ -1,24 +1,8 @@
-# peek
+# Peek
 
-Observe and inspect AI agent sessions in real-time. Tail Claude Code and Codex CLI sessions from another terminal, see every message, tool call, and thinking block as they happen.
+Observe and inspect AI agent sessions in real-time. Monitors Claude and Codex CLI sessions from another terminal, see every message, tool call, and thinking block as they happen.
 
 The CLI also starts a local browser viewer by default, so terminal streaming and the session timeline stay in sync.
-
-Flags can be combined on the same command. For example, `peek claude --replay --web-port 4317` replays from the start and serves the viewer on port `4317`.
-
-## Install
-
-### GitHub with npm or pnpm
-
-Install directly from GitHub without publishing to npm:
-
-```sh
-npm install -g github:bskyn/peek#main
-# or
-pnpm add -g github:bskyn/peek#main
-```
-
-If you install a tagged release such as `#v0.1.0`, the installer downloads the matching GitHub Release asset. If you install from a branch or commit, it falls back to `go build`, so Go 1.24+ must be installed.
 
 ### Homebrew
 
@@ -41,32 +25,23 @@ make build
 ./bin/peek --version
 ```
 
-### Agent bootstrap
-
-If you want Claude Code or Codex CLI to install `peek` for you, this is the shortest working sequence:
-
-```sh
-npm install -g github:bskyn/peek#main
-peek --version
-```
-
 ## Usage
 
-### Tail a Claude session
+### Monitor a Claude session
 
-Start Claude Code in one terminal, then in another:
+Start Claude in one terminal, then in another:
 
 ```sh
 # Auto-discover the latest active session
 peek claude
 
-# Tail a specific session by ID
+# Monitor a specific session by ID
 peek claude 75c5194d-ea16-4b91-99cf-3d321d111a51
 
-# Keep terminal output only
+# Disable the web viewer and keep terminal output only
 peek claude --no-web
 
-# Replay from the beginning and pin the viewer port
+# Replay from the beginning and serve the viewer on port 4317
 peek claude --replay --web-port 4317
 ```
 
@@ -94,7 +69,7 @@ Events stream in real-time with sequential numbering:
      Here are the files in /tmp: ...
 ```
 
-### Tail a Codex session
+### Monitor a Codex session
 
 Start the Codex CLI in one terminal, then in another:
 
@@ -102,7 +77,7 @@ Start the Codex CLI in one terminal, then in another:
 # Auto-discover the latest active session
 peek codex
 
-# Tail a specific session by UUID
+# Monitor a specific session by UUID
 peek codex 019cc0a5-6911-7123-b2ff-a4848ccd6e79
 
 # Replay from the beginning
@@ -128,7 +103,7 @@ peek sessions list
 
 ### Replay a session from the beginning
 
-By default, tailing resumes from where you last left off. Use `--replay` to start from the beginning and see the full conversation history:
+By default, tracing resumes from where you last left off. Use `--replay` to start from the beginning and see the full conversation history:
 
 ```sh
 peek claude --replay
@@ -156,27 +131,21 @@ peek codex --replay --open-browser=false --web-port 4317
 
 ## How it works
 
-peek reads session files from Claude Code (`~/.claude/projects/`) and Codex CLI (`~/.codex/sessions/`) and tails them in real-time using filesystem notifications. Each JSONL event is parsed, normalized into a canonical event model, rendered to the terminal, and persisted to a local SQLite database.
-
-Sessions are resumable -- if you stop and restart, it picks up where it left off without duplicating events. The embedded Vite app reads the same store over a local HTTP server and receives live updates over Server-Sent Events.
+Peek reads session files from Claude and Codex CLI and monitors them in real-time using filesystem notifications. Each JSONL event is parsed, normalized into a canonical event model, rendered to the terminal, and persisted to a local SQLite database.
 
 ## Development
 
 ```sh
 # Install frontend dependencies once
-make web-install
+make install
 
-# Build the embedded web app
-make web-build
-
-# Build
+# Build the embedded web app and CLI
 make build
 
 # Run tests
 make test
 
-# Install the pinned linter binary, then lint
-make lint-install
+# Lint (requires golangci-lint on PATH)
 make lint
 
 # Run from source
