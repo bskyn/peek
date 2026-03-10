@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	claudeconn "github.com/bskyn/peek/internal/connector/claude"
 	codexconn "github.com/bskyn/peek/internal/connector/codex"
+	"github.com/bskyn/peek/internal/jsonl"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/viewer"
 )
@@ -272,15 +274,22 @@ func importCodexSessionFile(st *store.Store, rt *viewer.Runtime, sf *codexconn.S
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	reader := bufio.NewReader(file)
 
 	internalSessionID := "codex-" + sf.SessionID
 	var seq int64
 	annotator := newUsageAnnotator(st, internalSessionID, replay)
 	insertedCount := 0
-	for scanner.Scan() {
-		parsedEvents, nextSeq, err := codexconn.ParseLine(scanner.Text(), internalSessionID, seq)
+	for {
+		line, _, _, err := jsonl.ReadLine(reader)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return insertedCount, err
+		}
+
+		parsedEvents, nextSeq, err := codexconn.ParseLine(string(line), internalSessionID, seq)
 		if err != nil {
 			continue
 		}
@@ -292,10 +301,6 @@ func importCodexSessionFile(st *store.Store, rt *viewer.Runtime, sf *codexconn.S
 		publishInsertedEvents(rt, insertedEvents)
 		insertedCount += len(insertedEvents)
 		seq = nextSeq
-	}
-
-	if err := scanner.Err(); err != nil {
-		return insertedCount, err
 	}
 
 	info, err := file.Stat()

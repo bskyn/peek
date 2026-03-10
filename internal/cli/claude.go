@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/bskyn/peek/internal/connector/claude"
 	"github.com/bskyn/peek/internal/event"
+	"github.com/bskyn/peek/internal/jsonl"
 	"github.com/bskyn/peek/internal/renderer"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/tailer"
@@ -289,15 +291,22 @@ func importClaudeSessionFile(st *store.Store, rt *viewer.Runtime, sf *claude.Ses
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	reader := bufio.NewReader(file)
 
 	internalSessionID := "claude-" + sf.SessionID
 	var seq int64
 	annotator := newUsageAnnotator(st, internalSessionID, replay)
 	insertedCount := 0
-	for scanner.Scan() {
-		parsedEvents, nextSeq, err := claude.ParseLine(scanner.Text(), internalSessionID, seq)
+	for {
+		line, _, _, err := jsonl.ReadLine(reader)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return insertedCount, err
+		}
+
+		parsedEvents, nextSeq, err := claude.ParseLine(string(line), internalSessionID, seq)
 		if err != nil {
 			continue
 		}
@@ -309,10 +318,6 @@ func importClaudeSessionFile(st *store.Store, rt *viewer.Runtime, sf *claude.Ses
 		publishInsertedEvents(rt, insertedEvents)
 		insertedCount += len(insertedEvents)
 		seq = nextSeq
-	}
-
-	if err := scanner.Err(); err != nil {
-		return insertedCount, err
 	}
 
 	info, err := file.Stat()

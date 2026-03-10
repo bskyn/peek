@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/bskyn/peek/internal/jsonl"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -126,26 +127,26 @@ func (t *Tailer) readNewLines(offset int64) int64 {
 		return offset
 	}
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 2*1024*1024), 10*1024*1024) // 10MB max line
+	reader := bufio.NewReader(f)
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			offset += 1 // newline byte
+	for {
+		line, bytesRead, terminated, err := jsonl.ReadLine(reader)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return offset
+		}
+		if !terminated {
+			break
+		}
+
+		text := string(line)
+		offset += int64(bytesRead)
+		if text == "" {
 			continue
 		}
-		t.lines <- line
-		offset += int64(len(scanner.Bytes())) + 1 // +1 for newline
-	}
-
-	// If scanner hit a token-too-long error, skip past the current file position
-	// to avoid re-reading the same oversized line forever.
-	if scanner.Err() != nil {
-		pos, err := f.Seek(0, io.SeekCurrent)
-		if err == nil && pos > offset {
-			offset = pos
-		}
+		t.lines <- text
 	}
 
 	return offset

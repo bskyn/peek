@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bskyn/peek/internal/event"
+	"github.com/bskyn/peek/internal/jsonl"
 )
 
 // SessionFile represents a discovered Codex rollout session on disk.
@@ -188,12 +190,14 @@ func ReadCWDFromMeta(path string) string {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer
-	if !scanner.Scan() {
+	reader := bufio.NewReader(f)
+	line, _, _, err := jsonl.ReadLine(reader)
+	if err != nil && err != io.EOF {
 		return ""
 	}
-	line := scanner.Text()
+	if len(line) == 0 {
+		return ""
+	}
 
 	var raw struct {
 		Type    string `json:"type"`
@@ -201,7 +205,7 @@ func ReadCWDFromMeta(path string) string {
 			CWD string `json:"cwd"`
 		} `json:"payload"`
 	}
-	if err := json.Unmarshal([]byte(line), &raw); err != nil {
+	if err := json.Unmarshal(line, &raw); err != nil {
 		return ""
 	}
 	if raw.Type != "session_meta" {

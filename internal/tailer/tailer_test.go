@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -218,5 +219,46 @@ func TestTailCursorTracking(t *testing.T) {
 	// "line1\nline2\n" = 12 bytes
 	if finalOffset != 12 {
 		t.Errorf("expected final offset 12, got %d", finalOffset)
+	}
+}
+
+func TestTailHandlesOversizedLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.jsonl")
+	largeLine := strings.Repeat("x", (10*1024*1024)+128)
+	content := largeLine + "\n"
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tl := New(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var lines []string
+	done := make(chan struct{})
+	go func() {
+		for line := range tl.Lines() {
+			lines = append(lines, line)
+			cancel()
+		}
+		close(done)
+	}()
+
+	finalOffset, err := tl.Tail(ctx, 0)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	<-done
+
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if len(lines[0]) != len(largeLine) {
+		t.Fatalf("expected line length %d, got %d", len(largeLine), len(lines[0]))
+	}
+	if finalOffset != int64(len(content)) {
+		t.Fatalf("expected offset %d, got %d", len(content), finalOffset)
 	}
 }

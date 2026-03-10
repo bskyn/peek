@@ -6,9 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	claudeconn "github.com/bskyn/peek/internal/connector/claude"
+	codexconn "github.com/bskyn/peek/internal/connector/codex"
 	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/store"
 )
@@ -219,5 +222,100 @@ func TestRunSessionsLoadAllImportsClaudeAndCodex(t *testing.T) {
 	}
 	if codexCursor.ByteOffset != codexInfo.Size() {
 		t.Fatalf("expected Codex cursor %d, got %d", codexInfo.Size(), codexCursor.ByteOffset)
+	}
+}
+
+func TestImportCodexSessionFileHandlesOversizedLine(t *testing.T) {
+	tempDBPath := filepath.Join(t.TempDir(), "peek.db")
+	st, err := store.Open(tempDBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	path := filepath.Join(t.TempDir(), "rollout-2026-03-05T10-00-00-codex-large.jsonl")
+	largeOutput := strings.Repeat("x", (1024*1024)+128)
+	content := `{"timestamp":"2026-03-05T10:00:00.000Z","type":"session_meta","payload":{"id":"codex-large","cwd":"/projects/foo","model":"gpt-5"}}` + "\n" +
+		`{"timestamp":"2026-03-05T10:00:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_123","output":"` + largeOutput + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sf := event.Session{
+		ID:              "codex-codex-large",
+		Source:          "codex",
+		ProjectPath:     "/projects/foo",
+		SourceSessionID: "codex-large",
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := st.CreateSession(sf); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	inserted, err := importCodexSessionFile(st, nil, &codexconn.SessionFile{
+		Path:        path,
+		SessionID:   "codex-large",
+		ProjectPath: "/projects/foo",
+	}, true)
+	if err != nil {
+		t.Fatalf("importCodexSessionFile: %v", err)
+	}
+	if inserted != 2 {
+		t.Fatalf("expected 2 inserted events, got %d", inserted)
+	}
+
+	events, err := st.GetEvents("codex-codex-large")
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 stored events, got %d", len(events))
+	}
+}
+
+func TestImportClaudeSessionFileHandlesOversizedLine(t *testing.T) {
+	tempDBPath := filepath.Join(t.TempDir(), "peek.db")
+	st, err := store.Open(tempDBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	path := filepath.Join(t.TempDir(), "claude-large.jsonl")
+	largeContent := strings.Repeat("y", (1024*1024)+128)
+	content := `{"type":"user","uuid":"u1","sessionId":"claude-large","timestamp":"2026-03-05T14:32:05.000Z","message":{"role":"user","content":"` + largeContent + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sf := event.Session{
+		ID:              "claude-claude-large",
+		Source:          "claude",
+		SourceSessionID: "claude-large",
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := st.CreateSession(sf); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	inserted, err := importClaudeSessionFile(st, nil, &claudeconn.SessionFile{
+		Path:      path,
+		SessionID: "claude-large",
+	}, true)
+	if err != nil {
+		t.Fatalf("importClaudeSessionFile: %v", err)
+	}
+	if inserted != 1 {
+		t.Fatalf("expected 1 inserted event, got %d", inserted)
+	}
+
+	events, err := st.GetEvents("claude-claude-large")
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 stored event, got %d", len(events))
 	}
 }
