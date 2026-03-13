@@ -44,6 +44,7 @@ npm/node_modules/
 npm/bin/
 web/node_modules/
 .pnpm-store/
+.golangci-lint-cache/
 .gocache/
 .gomodcache/
 .gopath/
