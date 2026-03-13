@@ -43,6 +43,7 @@ Thumbs.db
 npm/node_modules/
 npm/bin/
 web/node_modules/
+.pnpm-store/
 .gocache/
 .gomodcache/
 .gopath/

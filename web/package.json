@@ -2,6 +2,7 @@
   "name": "peek-web",
   "version": "0.0.0",
   "private": true,
+  "packageManager": "pnpm@10.28.2",
   "type": "module",
   "scripts": {
     "build": "vite build",
