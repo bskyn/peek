@@ -18,7 +18,7 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "peek",
 		Short: "Agent introspection dashboard",
-		Long:  "Observe and inspect AI agent sessions in real-time.",
+		Long:  "Launch managed agent sessions with branching and checkpoints, or observe existing sessions in real-time.\n\n  peek run claude    Launch a managed Claude session (recommended)\n  peek run codex     Launch a managed Codex session\n  peek claude        Monitor an existing Claude session\n  peek codex         Monitor an existing Codex session",
 	}
 
 	cmd.PersistentFlags().StringVar(&dbPath, "db-path", defaultDBPath(), "Path to SQLite database")
@@ -28,6 +28,8 @@ func newRootCmd() *cobra.Command {
 
 	cmd.AddCommand(newClaudeCmd())
 	cmd.AddCommand(newCodexCmd())
+	cmd.AddCommand(newRunCmd())
+	cmd.AddCommand(newWorkspaceCmd())
 	cmd.AddCommand(newSessionsCmd())
 
 	return cmd

@@ -1,6 +1,9 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"strings"
+)
 
 const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -34,9 +37,75 @@ CREATE TABLE IF NOT EXISTS cursors (
 	byte_offset INTEGER NOT NULL DEFAULT 0,
 	session_id TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS workspaces (
+	id TEXT PRIMARY KEY,
+	parent_workspace_id TEXT REFERENCES workspaces(id),
+	status TEXT NOT NULL DEFAULT 'active',
+	project_path TEXT NOT NULL DEFAULT '',
+	worktree_path TEXT NOT NULL DEFAULT '',
+	git_ref TEXT NOT NULL DEFAULT '',
+	branch_from_seq INTEGER,
+	sibling_ordinal INTEGER NOT NULL DEFAULT 0,
+	is_root INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspaces_parent ON workspaces(parent_workspace_id);
+CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
+
+CREATE TABLE IF NOT EXISTS workspace_sessions (
+	workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	session_id TEXT NOT NULL REFERENCES sessions(id),
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (workspace_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS checkpoints (
+	id TEXT PRIMARY KEY,
+	workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	session_id TEXT NOT NULL REFERENCES sessions(id),
+	seq INTEGER NOT NULL,
+	kind TEXT NOT NULL,
+	git_ref TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	UNIQUE(workspace_id, seq, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkpoints_workspace_seq ON checkpoints(workspace_id, seq);
+
+CREATE TABLE IF NOT EXISTS branch_path_segments (
+	workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+	parent_workspace_id TEXT REFERENCES workspaces(id),
+	branch_seq INTEGER NOT NULL DEFAULT 0,
+	ordinal INTEGER NOT NULL DEFAULT 0,
+	depth INTEGER NOT NULL DEFAULT 0
+);
 `
 
+// migrations that add columns to existing tables. Each is idempotent —
+// SQLite returns "duplicate column name" if the column already exists,
+// which we silently ignore.
+var alterMigrations = []string{
+	`ALTER TABLE workspaces ADD COLUMN is_root INTEGER NOT NULL DEFAULT 0`,
+}
+
 func migrate(db *sql.DB) error {
-	_, err := db.Exec(schema)
-	return err
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	for _, stmt := range alterMigrations {
+		if _, err := db.Exec(stmt); err != nil {
+			// Ignore "duplicate column name" — means migration already applied
+			if !isDuplicateColumn(err) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func isDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column")
 }

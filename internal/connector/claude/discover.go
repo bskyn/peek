@@ -328,12 +328,17 @@ func sortSessionFiles(files []SessionFile) {
 	})
 }
 
+// EncodeProjectKey converts a filesystem path to Claude's encoded project folder name.
+// Claude replaces / and . (and potentially other special chars) with -.
+func EncodeProjectKey(path string) string {
+	encoded := strings.ReplaceAll(path, "/", "-")
+	encoded = strings.ReplaceAll(encoded, ".", "-")
+	return encoded
+}
+
 // decodeProjectKey converts Claude's encoded project folder name back to a path.
-// Claude encodes paths by replacing / with - (roughly).
+// This is a lossy best-effort decode — EncodeProjectKey is preferred for matching.
 func decodeProjectKey(key string) string {
-	// Claude uses a specific encoding: the folder name is the project path
-	// with slashes and other chars replaced. This is a best-effort decode.
-	// The exact encoding may vary; we store the raw key and the decoded attempt.
 	decoded := strings.ReplaceAll(key, "-", "/")
 	if !strings.HasPrefix(decoded, "/") {
 		decoded = "/" + decoded

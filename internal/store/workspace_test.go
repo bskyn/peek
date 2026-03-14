@@ -1,0 +1,737 @@
+package store
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/bskyn/peek/internal/event"
+	"github.com/bskyn/peek/internal/workspace"
+)
+
+func TestCreateAndGetWorkspace(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	w := workspace.Workspace{
+		ID:          "ws-1",
+		Status:      workspace.StatusActive,
+		ProjectPath: "/test/project",
+		GitRef:      "refs/peek/ws-1",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	if err := s.CreateWorkspace(w); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := s.GetWorkspace("ws-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	if got.ID != w.ID || got.Status != w.Status || got.ProjectPath != w.ProjectPath || got.GitRef != w.GitRef {
+		t.Errorf("workspace mismatch: got %+v", got)
+	}
+	if got.BranchFromSeq != nil {
+		t.Errorf("expected nil BranchFromSeq, got %v", *got.BranchFromSeq)
+	}
+}
+
+func TestCreateWorkspaceWithBranch(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Create parent
+	parent := workspace.Workspace{
+		ID:          "ws-parent",
+		Status:      workspace.StatusActive,
+		ProjectPath: "/test/project",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := s.CreateWorkspace(parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	// Create child branched from seq 5
+	branchSeq := int64(5)
+	child := workspace.Workspace{
+		ID:                "ws-child",
+		ParentWorkspaceID: "ws-parent",
+		Status:            workspace.StatusActive,
+		ProjectPath:       "/test/project",
+		BranchFromSeq:     &branchSeq,
+		SiblingOrdinal:    0,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := s.CreateWorkspace(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	got, err := s.GetWorkspace("ws-child")
+	if err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	if got.ParentWorkspaceID != "ws-parent" {
+		t.Errorf("expected parent ws-parent, got %q", got.ParentWorkspaceID)
+	}
+	if got.BranchFromSeq == nil || *got.BranchFromSeq != 5 {
+		t.Errorf("expected BranchFromSeq=5, got %v", got.BranchFromSeq)
+	}
+}
+
+func TestWorkspaceUpsertPreservesFields(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	w := workspace.Workspace{
+		ID:           "ws-1",
+		Status:       workspace.StatusActive,
+		ProjectPath:  "/test/project",
+		WorktreePath: "/tmp/worktree",
+		GitRef:       "refs/peek/ws-1",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := s.CreateWorkspace(w); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Upsert with empty worktree_path and git_ref — should preserve originals
+	w2 := workspace.Workspace{
+		ID:          "ws-1",
+		Status:      workspace.StatusFrozen,
+		ProjectPath: "/test/project",
+		CreatedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+	}
+	if err := s.CreateWorkspace(w2); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	got, err := s.GetWorkspace("ws-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != workspace.StatusFrozen {
+		t.Errorf("expected frozen status, got %s", got.Status)
+	}
+	if got.WorktreePath != "/tmp/worktree" {
+		t.Errorf("expected preserved worktree_path, got %q", got.WorktreePath)
+	}
+	if got.GitRef != "refs/peek/ws-1" {
+		t.Errorf("expected preserved git_ref, got %q", got.GitRef)
+	}
+}
+
+func TestUpdateWorkspaceStatus(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	w := workspace.Workspace{
+		ID:          "ws-1",
+		Status:      workspace.StatusActive,
+		ProjectPath: "/test",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := s.CreateWorkspace(w); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.UpdateWorkspaceStatus("ws-1", workspace.StatusFrozen); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	got, err := s.GetWorkspace("ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != workspace.StatusFrozen {
+		t.Errorf("expected frozen, got %s", got.Status)
+	}
+
+	// Non-existent workspace
+	if err := s.UpdateWorkspaceStatus("missing", workspace.StatusFrozen); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows for missing workspace, got %v", err)
+	}
+}
+
+func TestListWorkspaces(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	for i := 0; i < 3; i++ {
+		w := workspace.Workspace{
+			ID:          fmt.Sprintf("ws-%d", i),
+			Status:      workspace.StatusActive,
+			ProjectPath: "/test",
+			CreatedAt:   now.Add(time.Duration(i) * time.Second),
+			UpdatedAt:   now.Add(time.Duration(i) * time.Second),
+		}
+		if err := s.CreateWorkspace(w); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	summaries, err := s.ListWorkspaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 3 {
+		t.Fatalf("expected 3 workspaces, got %d", len(summaries))
+	}
+	// Newest first
+	if summaries[0].ID != "ws-2" {
+		t.Errorf("expected newest first, got %s", summaries[0].ID)
+	}
+}
+
+func TestListChildWorkspaces(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	parent := workspace.Workspace{
+		ID: "ws-root", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateWorkspace(parent); err != nil {
+		t.Fatal(err)
+	}
+
+	branchSeq := int64(3)
+	for i := 0; i < 3; i++ {
+		child := workspace.Workspace{
+			ID:                fmt.Sprintf("ws-child-%d", i),
+			ParentWorkspaceID: "ws-root",
+			Status:            workspace.StatusActive,
+			ProjectPath:       "/test",
+			BranchFromSeq:     &branchSeq,
+			SiblingOrdinal:    i,
+			CreatedAt:         now.Add(time.Duration(i) * time.Second),
+			UpdatedAt:         now.Add(time.Duration(i) * time.Second),
+		}
+		if err := s.CreateWorkspace(child); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	children, err := s.ListChildWorkspaces("ws-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 3 {
+		t.Fatalf("expected 3 children, got %d", len(children))
+	}
+	for i, child := range children {
+		if child.SiblingOrdinal != i {
+			t.Errorf("child %d: expected ordinal %d, got %d", i, i, child.SiblingOrdinal)
+		}
+	}
+}
+
+func TestNextSiblingOrdinal(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	parent := workspace.Workspace{
+		ID: "ws-root", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateWorkspace(parent); err != nil {
+		t.Fatal(err)
+	}
+
+	// No children yet
+	ord, err := s.NextSiblingOrdinal("ws-root", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ord != 0 {
+		t.Errorf("expected 0, got %d", ord)
+	}
+
+	// Add two children at seq 5
+	branchSeq := int64(5)
+	for i := 0; i < 2; i++ {
+		child := workspace.Workspace{
+			ID:                fmt.Sprintf("ws-child-%d", i),
+			ParentWorkspaceID: "ws-root",
+			Status:            workspace.StatusActive,
+			ProjectPath:       "/test",
+			BranchFromSeq:     &branchSeq,
+			SiblingOrdinal:    i,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		}
+		if err := s.CreateWorkspace(child); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ord, err = s.NextSiblingOrdinal("ws-root", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ord != 2 {
+		t.Errorf("expected 2, got %d", ord)
+	}
+
+	// Different branch seq should be independent
+	ord, err = s.NextSiblingOrdinal("ws-root", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ord != 0 {
+		t.Errorf("expected 0 for different seq, got %d", ord)
+	}
+}
+
+func TestWorkspaceSessionLink(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Need a session and workspace first
+	if err := s.CreateSession(testSession("s1", now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(testSession("s2", now)); err != nil {
+		t.Fatal(err)
+	}
+	w := workspace.Workspace{
+		ID: "ws-1", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateWorkspace(w); err != nil {
+		t.Fatal(err)
+	}
+
+	// Link two sessions
+	for _, sid := range []string{"s1", "s2"} {
+		ws := workspace.WorkspaceSession{
+			WorkspaceID: "ws-1",
+			SessionID:   sid,
+			CreatedAt:   now,
+		}
+		if err := s.LinkWorkspaceSession(ws); err != nil {
+			t.Fatalf("link %s: %v", sid, err)
+		}
+	}
+
+	// Idempotent
+	if err := s.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-1", SessionID: "s1", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("duplicate link should not error: %v", err)
+	}
+
+	links, err := s.ListWorkspaceSessions("ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("expected 2 links, got %d", len(links))
+	}
+}
+
+func TestCheckpointCRUD(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := s.CreateSession(testSession("s1", now)); err != nil {
+		t.Fatal(err)
+	}
+	w := workspace.Workspace{
+		ID: "ws-1", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateWorkspace(w); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create checkpoints
+	for seq := int64(0); seq < 5; seq++ {
+		for _, kind := range []workspace.SnapshotKind{workspace.SnapshotPreTool, workspace.SnapshotPostTool} {
+			cp := workspace.CheckpointRef{
+				ID:          CheckpointID("ws-1", seq, kind),
+				WorkspaceID: "ws-1",
+				SessionID:   "s1",
+				Seq:         seq,
+				Kind:        kind,
+				GitRef:      fmt.Sprintf("refs/peek/ws-1/%d/%s", seq, kind),
+				CreatedAt:   now.Add(time.Duration(seq) * time.Second),
+			}
+			if err := s.CreateCheckpoint(cp); err != nil {
+				t.Fatalf("create checkpoint seq=%d kind=%s: %v", seq, kind, err)
+			}
+		}
+	}
+
+	// Idempotent
+	cp := workspace.CheckpointRef{
+		ID:          CheckpointID("ws-1", 0, workspace.SnapshotPreTool),
+		WorkspaceID: "ws-1",
+		SessionID:   "s1",
+		Seq:         0,
+		Kind:        workspace.SnapshotPreTool,
+		GitRef:      "refs/peek/ws-1/0/pre_tool",
+		CreatedAt:   now,
+	}
+	if err := s.CreateCheckpoint(cp); err != nil {
+		t.Fatalf("duplicate checkpoint should not error: %v", err)
+	}
+
+	// List
+	checkpoints, err := s.ListCheckpoints("ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checkpoints) != 10 {
+		t.Fatalf("expected 10 checkpoints, got %d", len(checkpoints))
+	}
+
+	// Get
+	got, err := s.GetCheckpoint(CheckpointID("ws-1", 2, workspace.SnapshotPreTool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Seq != 2 || got.Kind != workspace.SnapshotPreTool {
+		t.Errorf("unexpected checkpoint: %+v", got)
+	}
+}
+
+func TestResolveCheckpoint(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := s.CreateSession(testSession("s1", now)); err != nil {
+		t.Fatal(err)
+	}
+	w := workspace.Workspace{
+		ID: "ws-1", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateWorkspace(w); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create checkpoints at seq 2, 5, 8
+	for _, seq := range []int64{2, 5, 8} {
+		cp := workspace.CheckpointRef{
+			ID:          CheckpointID("ws-1", seq, workspace.SnapshotPreTool),
+			WorkspaceID: "ws-1",
+			SessionID:   "s1",
+			Seq:         seq,
+			Kind:        workspace.SnapshotPreTool,
+			GitRef:      fmt.Sprintf("refs/peek/ws-1/%d/pre_tool", seq),
+			CreatedAt:   now,
+		}
+		if err := s.CreateCheckpoint(cp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Resolve at seq 6 should return checkpoint at seq 5
+	got, err := s.ResolveCheckpoint("ws-1", 6, workspace.SnapshotPreTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Seq != 5 {
+		t.Errorf("expected seq 5, got %d", got.Seq)
+	}
+
+	// Resolve at seq 1 should fail (no checkpoint at or before 1)
+	_, err = s.ResolveCheckpoint("ws-1", 1, workspace.SnapshotPreTool)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows, got %v", err)
+	}
+
+	// Resolve at exact seq should return that checkpoint
+	got, err = s.ResolveCheckpoint("ws-1", 8, workspace.SnapshotPreTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Seq != 8 {
+		t.Errorf("expected seq 8, got %d", got.Seq)
+	}
+}
+
+func TestBranchPathBreadcrumb(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Create a lineage: root -> child1 -> grandchild
+	for _, w := range []workspace.Workspace{
+		{ID: "ws-root", Status: workspace.StatusActive, ProjectPath: "/test", CreatedAt: now, UpdatedAt: now},
+		{ID: "ws-child1", ParentWorkspaceID: "ws-root", Status: workspace.StatusActive, ProjectPath: "/test", CreatedAt: now, UpdatedAt: now},
+		{ID: "ws-grandchild", ParentWorkspaceID: "ws-child1", Status: workspace.StatusActive, ProjectPath: "/test", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.CreateWorkspace(w); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Save branch path segments
+	segments := []workspace.BranchPathSegment{
+		{WorkspaceID: "ws-root", Depth: 0, Ordinal: 0},
+		{WorkspaceID: "ws-child1", ParentWorkspaceID: "ws-root", BranchSeq: 3, Depth: 1, Ordinal: 0},
+		{WorkspaceID: "ws-grandchild", ParentWorkspaceID: "ws-child1", BranchSeq: 7, Depth: 2, Ordinal: 0},
+	}
+	for _, seg := range segments {
+		if err := s.SaveBranchPath(seg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Breadcrumb from grandchild should return root -> child1 -> grandchild
+	path, err := s.GetBranchPath("ws-grandchild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(path) != 3 {
+		t.Fatalf("expected 3 segments, got %d", len(path))
+	}
+	if path[0].WorkspaceID != "ws-root" {
+		t.Errorf("first segment should be root, got %s", path[0].WorkspaceID)
+	}
+	if path[1].WorkspaceID != "ws-child1" || path[1].BranchSeq != 3 {
+		t.Errorf("second segment mismatch: %+v", path[1])
+	}
+	if path[2].WorkspaceID != "ws-grandchild" || path[2].BranchSeq != 7 {
+		t.Errorf("third segment mismatch: %+v", path[2])
+	}
+
+	// Breadcrumb from root should return just root
+	path, err = s.GetBranchPath("ws-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(path) != 1 {
+		t.Fatalf("expected 1 segment for root, got %d", len(path))
+	}
+}
+
+func TestBranchPathSiblingStability(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	root := workspace.Workspace{
+		ID: "ws-root", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveBranchPath(workspace.BranchPathSegment{
+		WorkspaceID: "ws-root", Depth: 0, Ordinal: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Branch twice from same sequence
+	branchSeq := int64(5)
+	for i := 0; i < 2; i++ {
+		id := fmt.Sprintf("ws-sibling-%d", i)
+		w := workspace.Workspace{
+			ID:                id,
+			ParentWorkspaceID: "ws-root",
+			Status:            workspace.StatusActive,
+			ProjectPath:       "/test",
+			BranchFromSeq:     &branchSeq,
+			SiblingOrdinal:    i,
+			CreatedAt:         now.Add(time.Duration(i) * time.Second),
+			UpdatedAt:         now.Add(time.Duration(i) * time.Second),
+		}
+		if err := s.CreateWorkspace(w); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveBranchPath(workspace.BranchPathSegment{
+			WorkspaceID:       id,
+			ParentWorkspaceID: "ws-root",
+			BranchSeq:         5,
+			Ordinal:           i,
+			Depth:             1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Verify sibling ordinals remain stable
+	children, err := s.ListChildWorkspaces("ws-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("expected 2 siblings, got %d", len(children))
+	}
+	if children[0].SiblingOrdinal != 0 || children[1].SiblingOrdinal != 1 {
+		t.Errorf("sibling ordinals not stable: %d, %d", children[0].SiblingOrdinal, children[1].SiblingOrdinal)
+	}
+}
+
+func TestDeleteWorkspace(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := s.CreateSession(testSession("s1", now)); err != nil {
+		t.Fatal(err)
+	}
+
+	parent := workspace.Workspace{
+		ID: "ws-parent", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	child := workspace.Workspace{
+		ID: "ws-child", ParentWorkspaceID: "ws-parent", Status: workspace.StatusActive,
+		ProjectPath: "/test", CreatedAt: now, UpdatedAt: now,
+	}
+	for _, w := range []workspace.Workspace{parent, child} {
+		if err := s.CreateWorkspace(w); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Add session link and checkpoint to parent
+	if err := s.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-parent", SessionID: "s1", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateCheckpoint(workspace.CheckpointRef{
+		ID: "cp-1", WorkspaceID: "ws-parent", SessionID: "s1",
+		Seq: 0, Kind: workspace.SnapshotPreTool, GitRef: "ref1", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveBranchPath(workspace.BranchPathSegment{
+		WorkspaceID: "ws-parent", Depth: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := s.DeleteWorkspace("ws-parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Fatal("expected workspace to be deleted")
+	}
+
+	// Workspace gone
+	if _, err := s.GetWorkspace("ws-parent"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected workspace to be gone, got %v", err)
+	}
+
+	// Checkpoint gone
+	if _, err := s.GetCheckpoint("cp-1"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected checkpoint to be gone, got %v", err)
+	}
+
+	// Child's parent cleared
+	gotChild, err := s.GetWorkspace("ws-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotChild.ParentWorkspaceID != "" {
+		t.Errorf("expected child parent cleared, got %q", gotChild.ParentWorkspaceID)
+	}
+}
+
+func TestMigrationIdempotency(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+
+	// First open
+	s1, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := s1.CreateWorkspace(workspace.Workspace{
+		ID: "ws-1", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	s1.Close()
+
+	// Second open (re-runs migration)
+	s2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	defer s2.Close()
+
+	got, err := s2.GetWorkspace("ws-1")
+	if err != nil {
+		t.Fatalf("get after reopen: %v", err)
+	}
+	if got.ID != "ws-1" || got.Status != workspace.StatusActive {
+		t.Errorf("workspace lost after reopen: %+v", got)
+	}
+}
+
+func TestWorkspaceSummaryCounters(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := s.CreateSession(testSession("s1", now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(testSession("s2", now)); err != nil {
+		t.Fatal(err)
+	}
+
+	w := workspace.Workspace{
+		ID: "ws-1", Status: workspace.StatusActive, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateWorkspace(w); err != nil {
+		t.Fatal(err)
+	}
+
+	// Link 2 sessions
+	for _, sid := range []string{"s1", "s2"} {
+		if err := s.LinkWorkspaceSession(workspace.WorkspaceSession{
+			WorkspaceID: "ws-1", SessionID: sid, CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Create 3 checkpoints
+	for seq := int64(0); seq < 3; seq++ {
+		if err := s.CreateCheckpoint(workspace.CheckpointRef{
+			ID:          CheckpointID("ws-1", seq, workspace.SnapshotPreTool),
+			WorkspaceID: "ws-1", SessionID: "s1", Seq: seq,
+			Kind: workspace.SnapshotPreTool, GitRef: "ref", CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	summary, err := s.GetWorkspaceSummary("ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.SessionCount != 2 {
+		t.Errorf("expected 2 sessions, got %d", summary.SessionCount)
+	}
+	if summary.CheckpointCount != 3 {
+		t.Errorf("expected 3 checkpoints, got %d", summary.CheckpointCount)
+	}
+}
+
+// testSession is a helper for creating test sessions.
+func testSession(id string, now time.Time) event.Session {
+	return event.Session{
+		ID:        id,
+		Source:    "claude",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
