@@ -69,7 +69,7 @@ func newWorkspaceListCmd() *cobra.Command {
 func newWorkspaceBranchCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "branch <workspace-id> <seq>",
-		Short: "Branch from a workspace at a specific event sequence",
+		Short: "Send a branch request to the live managed runtime",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
 			wsID := args[0]
@@ -84,24 +84,15 @@ func newWorkspaceBranchCmd() *cobra.Command {
 			}
 			defer st.Close()
 
-			projectDir, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-
-			orch := managed.NewOrchestrator(st, projectDir)
-			result, err := orch.Branch(managed.BranchRequest{
-				SourceWorkspaceID: wsID,
-				BranchFromSeq:     seq,
-			})
+			result, err := enqueueManagedBranchRequest(st, wsID, seq)
 			if err != nil {
 				return err
 			}
 
 			fmt.Printf("Branched from %s @seq %d\n", wsID, seq)
-			fmt.Printf("  New workspace: %s\n", result.NewWorkspaceID)
-			fmt.Printf("  New session:   %s\n", result.NewSessionID)
-			fmt.Printf("  Worktree:      %s\n", result.WorktreePath)
+			fmt.Printf("  New workspace: %s\n", result.ResponseWorkspaceID)
+			fmt.Printf("  New session:   %s\n", result.ResponseSessionID)
+			fmt.Printf("  Worktree:      %s\n", result.ResponseWorktreePath)
 			fmt.Printf("  Source %s is now frozen.\n", wsID)
 			return nil
 		},
@@ -111,7 +102,7 @@ func newWorkspaceBranchCmd() *cobra.Command {
 func newWorkspaceSwitchCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "switch <workspace-id>",
-		Short: "Switch to a workspace (re-materializes if needed)",
+		Short: "Send a switch request to the live managed runtime",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			st, err := store.Open(dbPath)
@@ -120,24 +111,18 @@ func newWorkspaceSwitchCmd() *cobra.Command {
 			}
 			defer st.Close()
 
-			projectDir, err := os.Getwd()
+			result, err := enqueueManagedSwitchRequest(st, args[0])
 			if err != nil {
 				return err
 			}
 
-			orch := managed.NewOrchestrator(st, projectDir)
-			if err := orch.Switch(managed.SwitchRequest{TargetWorkspaceID: args[0]}); err != nil {
-				return err
-			}
-
-			ws, err := st.GetWorkspace(args[0])
+			ws, err := st.GetWorkspace(result.ResponseWorkspaceID)
 			if err != nil {
 				return err
 			}
-
 			fmt.Printf("Switched to workspace %s [%s]\n", ws.ID, ws.Status)
-			if ws.WorktreePath != "" {
-				fmt.Printf("  Worktree: %s\n", ws.WorktreePath)
+			if result.ResponseWorktreePath != "" {
+				fmt.Printf("  Worktree: %s\n", result.ResponseWorktreePath)
 			}
 			return nil
 		},
@@ -163,7 +148,7 @@ func newWorkspaceMergeCmd() *cobra.Command {
 				return err
 			}
 
-			orch := managed.NewOrchestrator(st, projectDir)
+			orch := managed.NewOrchestrator(st, projectDir, managedWorktreeBase())
 			result, err := orch.Merge(managed.MergeRequest{
 				BranchWorkspaceID: args[0],
 				TargetWorkspaceID: targetID,
@@ -229,7 +214,7 @@ func newWorkspaceCoolCmd() *cobra.Command {
 				return err
 			}
 
-			orch := managed.NewOrchestrator(st, projectDir)
+			orch := managed.NewOrchestrator(st, projectDir, managedWorktreeBase())
 			if err := orch.CoolWorkspace(args[0]); err != nil {
 				return err
 			}

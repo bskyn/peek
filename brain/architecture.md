@@ -37,11 +37,13 @@ Originally tried `--claude` flag with optional value but cobra's `NoOptDefVal` d
 - **Independent connector pattern** — each connector is a separate package (`claude/`, `codex/`) with matching function signatures (`Discover`, `ParseLine`, `SessionFile`). No shared interface — wait for 3+ connectors before abstracting.
 - **Renderer source-awareness** — `TerminalRenderer.Source` field controls assistant message label ("Claude", "Codex", etc.). Set by CLI command.
 - **Codex encrypted reasoning** — Codex reasoning tokens are encrypted and unreadable. Rendered as placeholder text.
-- **Managed runtime** (Plan 6) — `peek run claude|codex` launches the native CLI as a subprocess, creates a workspace with session linkage, and enables branching/checkpoints.
+- **Managed runtime** (Plan 6) — `peek run claude|codex` launches the native CLI as a subprocess, creates a workspace with session linkage, and owns the live terminal while `peek workspace branch|switch` control it from another shell.
 - **Checkpoint engine** — pre-tool and post-tool snapshots stored as hidden git refs (`refs/peek/<ws>/<seq>/<kind>`) via synthetic commits. No visible branches polluting the user's git surface.
 - **Branch semantics** — branching from a `tool_call` resolves to the pre-result snapshot. Source workspace freezes on branch, child materializes as a git worktree.
+- **Resume planning** — new child workspaces relaunch from a synthesized transcript seed, while previously discovered provider sessions switch back via provider-native resume (`claude --resume`, `codex resume`) when possible.
 - **Cold worktrees** — inactive workspaces are dematerialized to ref-only storage. Switch re-materializes on demand via `git worktree add --detach`.
-- **Workspace graph** — 4 tables (workspaces, workspace_sessions, checkpoints, branch_path_segments) store lineage, snapshots, and breadcrumb paths independently from raw session metadata.
+- **Workspace graph + control plane** — 6 tables (workspaces, workspace_sessions, checkpoints, branch_path_segments, managed_runtimes, managed_runtime_requests) store lineage, snapshots, and same-terminal runtime control independently from raw session metadata.
+- **Live merge + exit propagation** — merge snapshots a warm child worktree before merging, conflict handoff marks the branch as conflicted, and wrapped provider exit codes bubble back out of `peek run`.
 
 ## Distribution
 

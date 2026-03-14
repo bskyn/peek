@@ -339,6 +339,91 @@ func TestWorkspaceSessionLink(t *testing.T) {
 	}
 }
 
+func TestCreateBranchedWorkspaceRollsBackOnLateFailure(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := s.CreateWorkspace(workspace.Workspace{
+		ID:          "ws-root",
+		Status:      workspace.StatusActive,
+		ProjectPath: "/repo",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(testSession("s-existing", now)); err != nil {
+		t.Fatal(err)
+	}
+
+	branchSeq := int64(7)
+	err := s.CreateBranchedWorkspace(BranchedWorkspaceCreate{
+		SourceWorkspaceID: "ws-root",
+		ChildWorkspace: workspace.Workspace{
+			ID:                "ws-child",
+			ParentWorkspaceID: "ws-root",
+			Status:            workspace.StatusActive,
+			ProjectPath:       "/repo",
+			WorktreePath:      "/tmp/ws-child",
+			GitRef:            "refs/peek/ws-child",
+			BranchFromSeq:     &branchSeq,
+			SiblingOrdinal:    0,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		},
+		ChildSession: event.Session{
+			ID:          "s-existing",
+			Source:      "claude",
+			ProjectPath: "/tmp/ws-child",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+		ChildLink: workspace.WorkspaceSession{
+			WorkspaceID: "ws-child",
+			SessionID:   "s-existing",
+			CreatedAt:   now,
+		},
+		ChildBranchPath: workspace.BranchPathSegment{
+			WorkspaceID:       "ws-child",
+			ParentWorkspaceID: "ws-root",
+			BranchSeq:         branchSeq,
+			Ordinal:           0,
+			Depth:             1,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	root, err := s.GetWorkspace("ws-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Status != workspace.StatusActive {
+		t.Fatalf("expected source to stay active after rollback, got %s", root.Status)
+	}
+
+	if _, err := s.GetWorkspace("ws-child"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected child workspace rollback, got %v", err)
+	}
+
+	links, err := s.ListWorkspaceSessions("ws-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("expected no child workspace links after rollback, got %d", len(links))
+	}
+
+	path, err := s.GetBranchPath("ws-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(path) != 0 {
+		t.Fatalf("expected no child branch path after rollback, got %d segments", len(path))
+	}
+}
+
 func TestCheckpointCRUD(t *testing.T) {
 	s := testStore(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)

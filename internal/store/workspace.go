@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/workspace"
 )
 
@@ -29,6 +30,16 @@ type BranchOrigin struct {
 	ParentWorkspaceID string `json:"parent_workspace_id"`
 	BranchFromSeq     int64  `json:"branch_from_seq"`
 	SiblingOrdinal    int    `json:"sibling_ordinal"`
+}
+
+// BranchedWorkspaceCreate captures the atomic database mutations required to
+// freeze a source workspace and create its child workspace/session metadata.
+type BranchedWorkspaceCreate struct {
+	SourceWorkspaceID string
+	ChildWorkspace    workspace.Workspace
+	ChildSession      event.Session
+	ChildLink         workspace.WorkspaceSession
+	ChildBranchPath   workspace.BranchPathSegment
 }
 
 // CreateWorkspace inserts or updates a workspace.
@@ -60,6 +71,106 @@ func (s *Store) CreateWorkspace(w workspace.Workspace) error {
 		w.ID, nilIfEmpty(w.ParentWorkspaceID), string(w.Status), w.ProjectPath,
 		w.WorktreePath, w.GitRef, branchSeq, w.SiblingOrdinal, isRoot,
 		w.CreatedAt.Format(time.RFC3339Nano), w.UpdatedAt.Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+// CreateBranchedWorkspace atomically freezes the source workspace and creates
+// the child workspace/session/linkage rows for a new branch.
+func (s *Store) CreateBranchedWorkspace(input BranchedWorkspaceCreate) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := freezeActiveWorkspaceTx(tx, input.SourceWorkspaceID); err != nil {
+		return err
+	}
+	if err := insertWorkspaceStrictTx(tx, input.ChildWorkspace); err != nil {
+		return err
+	}
+	if err := insertSessionStrictTx(tx, input.ChildSession); err != nil {
+		return err
+	}
+	if err := insertWorkspaceSessionTx(tx, input.ChildLink); err != nil {
+		return err
+	}
+	if err := insertBranchPathTx(tx, input.ChildBranchPath); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func freezeActiveWorkspaceTx(tx *sql.Tx, id string) error {
+	result, err := tx.Exec(
+		`UPDATE workspaces
+		    SET status = ?, updated_at = ?
+		  WHERE id = ? AND status = ?`,
+		string(workspace.StatusFrozen),
+		time.Now().UTC().Format(time.RFC3339Nano),
+		id,
+		string(workspace.StatusActive),
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("source workspace %q is not active", id)
+	}
+	return nil
+}
+
+func insertWorkspaceStrictTx(tx *sql.Tx, w workspace.Workspace) error {
+	var branchSeq any
+	if w.BranchFromSeq != nil {
+		branchSeq = *w.BranchFromSeq
+	}
+
+	isRoot := 0
+	if w.IsRoot {
+		isRoot = 1
+	}
+
+	_, err := tx.Exec(
+		`INSERT INTO workspaces (id, parent_workspace_id, status, project_path, worktree_path, git_ref, branch_from_seq, sibling_ordinal, is_root, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, nilIfEmpty(w.ParentWorkspaceID), string(w.Status), w.ProjectPath,
+		w.WorktreePath, w.GitRef, branchSeq, w.SiblingOrdinal, isRoot,
+		w.CreatedAt.Format(time.RFC3339Nano), w.UpdatedAt.Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func insertSessionStrictTx(tx *sql.Tx, sess event.Session) error {
+	_, err := tx.Exec(
+		`INSERT INTO sessions (id, source, project_path, source_session_id, parent_session_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.Source, sess.ProjectPath, sess.SourceSessionID, nilIfEmpty(sess.ParentSessionID),
+		sess.CreatedAt.Format(time.RFC3339Nano), sess.UpdatedAt.Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func insertWorkspaceSessionTx(tx *sql.Tx, ws workspace.WorkspaceSession) error {
+	_, err := tx.Exec(
+		`INSERT INTO workspace_sessions (workspace_id, session_id, created_at)
+		 VALUES (?, ?, ?)`,
+		ws.WorkspaceID, ws.SessionID, ws.CreatedAt.Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func insertBranchPathTx(tx *sql.Tx, seg workspace.BranchPathSegment) error {
+	_, err := tx.Exec(
+		`INSERT INTO branch_path_segments (workspace_id, parent_workspace_id, branch_seq, ordinal, depth)
+		 VALUES (?, ?, ?, ?, ?)`,
+		seg.WorkspaceID, nilIfEmpty(seg.ParentWorkspaceID), seg.BranchSeq, seg.Ordinal, seg.Depth,
 	)
 	return err
 }

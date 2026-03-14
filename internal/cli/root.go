@@ -18,7 +18,7 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "peek",
 		Short: "Agent introspection dashboard",
-		Long:  "Launch managed agent sessions with branching and checkpoints, or observe existing sessions in real-time.\n\n  peek run claude    Launch a managed Claude session (recommended)\n  peek run codex     Launch a managed Codex session\n  peek claude        Monitor an existing Claude session\n  peek codex         Monitor an existing Codex session",
+		Long:  "Launch managed agent sessions with branching and checkpoints, or observe existing sessions in real-time.\n\nManaged control loop:\n  peek run claude    Own the live Claude terminal\n  peek run codex     Own the live Codex terminal\n  peek ws branch     Send a branch request from another terminal\n  peek ws switch     Send a switch request from another terminal\n\nPassive monitoring:\n  peek claude        Monitor an existing Claude session\n  peek codex         Monitor an existing Codex session",
 	}
 
 	cmd.PersistentFlags().StringVar(&dbPath, "db-path", defaultDBPath(), "Path to SQLite database")

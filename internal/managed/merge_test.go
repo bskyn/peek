@@ -33,15 +33,6 @@ func TestMergeClean(t *testing.T) {
 	}
 	commitInDir(t, result.WorktreePath, "branch change")
 
-	// Capture the branch state as a git ref
-	ref, err := captureWorktreeAsRef(result.WorktreePath, result.NewWorkspaceID, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.UpdateWorkspaceGitRef(result.NewWorkspaceID, ref); err != nil {
-		t.Fatal(err)
-	}
-
 	// Re-activate source for merge target
 	if err := st.UpdateWorkspaceStatus("ws-root", workspace.StatusActive); err != nil {
 		t.Fatal(err)
@@ -102,15 +93,6 @@ func TestMergeConflict(t *testing.T) {
 	}
 	commitInDir(t, result.WorktreePath, "branch change")
 
-	// Capture branch state
-	ref, err := captureWorktreeAsRef(result.WorktreePath, result.NewWorkspaceID, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.UpdateWorkspaceGitRef(result.NewWorkspaceID, ref); err != nil {
-		t.Fatal(err)
-	}
-
 	// Re-activate source
 	if err := st.UpdateWorkspaceStatus("ws-root", workspace.StatusActive); err != nil {
 		t.Fatal(err)
@@ -136,8 +118,8 @@ func TestMergeConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if branch.Status == workspace.StatusMerged {
-		t.Error("branch should not be merged when conflicts exist")
+	if branch.Status != workspace.StatusConflict {
+		t.Errorf("expected conflict status, got %s", branch.Status)
 	}
 
 	// Abort the merge to clean up

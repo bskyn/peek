@@ -1,6 +1,7 @@
 package managed
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,7 @@ type BranchResult struct {
 	NewSessionID   string
 	WorktreePath   string
 	GitRef         string
+	Anchor         BranchAnchorResolution
 }
 
 // Orchestrator manages branch creation, workspace freezing, and switch activation.
@@ -40,19 +42,17 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator creates a branch/switch orchestrator.
-func NewOrchestrator(st *store.Store, repoDir string) *Orchestrator {
-	home, _ := os.UserHomeDir()
+func NewOrchestrator(st *store.Store, repoDir, worktreeBase string) *Orchestrator {
 	return &Orchestrator{
 		st:           st,
 		repoDir:      repoDir,
-		worktreeBase: filepath.Join(home, ".peek", "worktrees"),
+		worktreeBase: defaultWorktreeBase(worktreeBase),
 	}
 }
 
 // Branch creates a new workspace from a specific event sequence in the source workspace.
 // It freezes the source, resolves the pre-tool checkpoint, and materializes the child.
 func (o *Orchestrator) Branch(req BranchRequest) (*BranchResult, error) {
-	// Validate source workspace
 	src, err := o.st.GetWorkspace(req.SourceWorkspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("get source workspace: %w", err)
@@ -61,13 +61,16 @@ func (o *Orchestrator) Branch(req BranchRequest) (*BranchResult, error) {
 		return nil, fmt.Errorf("cannot branch from %s workspace %q", src.Status, src.ID)
 	}
 
-	// Resolve pre-tool checkpoint at the branch sequence
-	cp, err := o.st.ResolveCheckpoint(req.SourceWorkspaceID, req.BranchFromSeq, workspace.SnapshotPreTool)
+	sourceSession, err := o.st.GetLatestWorkspaceSession(req.SourceWorkspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve checkpoint at seq %d: %w", req.BranchFromSeq, err)
+		return nil, fmt.Errorf("get source session: %w", err)
 	}
 
-	// Get next sibling ordinal
+	anchor, err := o.resolveBranchAnchor(req.SourceWorkspaceID, sourceSession.ID, req.BranchFromSeq)
+	if err != nil {
+		return nil, fmt.Errorf("resolve branch anchor at seq %d: %w", req.BranchFromSeq, err)
+	}
+
 	ordinal, err := o.st.NextSiblingOrdinal(req.SourceWorkspaceID, req.BranchFromSeq)
 	if err != nil {
 		return nil, fmt.Errorf("next sibling ordinal: %w", err)
@@ -75,17 +78,20 @@ func (o *Orchestrator) Branch(req BranchRequest) (*BranchResult, error) {
 
 	now := time.Now().UTC()
 	newWSID := fmt.Sprintf("ws-%s", uuid.New().String()[:8])
-	newSessID := fmt.Sprintf("%s-managed-%s", src.ProjectPath, uuid.New().String()[:8])
+	newSessID := fmt.Sprintf("%s-managed-%s", sourceSession.Source, uuid.New().String()[:8])
 
-	// Determine worktree path
 	worktreePath := filepath.Join(o.worktreeBase, newWSID)
-
-	// Freeze source workspace
-	if err := o.st.UpdateWorkspaceStatus(req.SourceWorkspaceID, workspace.StatusFrozen); err != nil {
-		return nil, fmt.Errorf("freeze source: %w", err)
+	if err := os.MkdirAll(o.worktreeBase, 0o755); err != nil {
+		return nil, fmt.Errorf("create worktree base: %w", err)
+	}
+	if err := MaterializeRef(anchor.GitRef, worktreePath, o.repoDir); err != nil {
+		return nil, fmt.Errorf("materialize worktree: %w", err)
 	}
 
-	// Create child workspace
+	cleanup := func() {
+		_ = RemoveWorktree(worktreePath, o.repoDir)
+	}
+
 	branchSeq := req.BranchFromSeq
 	childWS := workspace.Workspace{
 		ID:                newWSID,
@@ -93,69 +99,58 @@ func (o *Orchestrator) Branch(req BranchRequest) (*BranchResult, error) {
 		Status:            workspace.StatusActive,
 		ProjectPath:       src.ProjectPath,
 		WorktreePath:      worktreePath,
-		GitRef:            cp.GitRef,
+		GitRef:            anchor.GitRef,
 		BranchFromSeq:     &branchSeq,
 		SiblingOrdinal:    ordinal,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-	if err := o.st.CreateWorkspace(childWS); err != nil {
-		return nil, fmt.Errorf("create child workspace: %w", err)
-	}
 
-	// Create session for the new workspace
 	sess := event.Session{
-		ID:          newSessID,
-		Source:      "managed",
-		ProjectPath: src.ProjectPath,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	if err := o.st.CreateSession(sess); err != nil {
-		return nil, fmt.Errorf("create session: %w", err)
+		ID:              newSessID,
+		Source:          sourceSession.Source,
+		ProjectPath:     worktreePath,
+		ParentSessionID: sourceSession.ID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
-	// Link workspace to session
-	if err := o.st.LinkWorkspaceSession(workspace.WorkspaceSession{
-		WorkspaceID: newWSID,
-		SessionID:   newSessID,
-		CreatedAt:   now,
-	}); err != nil {
-		return nil, fmt.Errorf("link workspace session: %w", err)
-	}
-
-	// Save branch path segment
 	parentPath, err := o.st.GetBranchPath(req.SourceWorkspaceID)
 	if err != nil {
+		cleanup()
 		return nil, fmt.Errorf("get parent branch path: %w", err)
 	}
 	depth := 0
 	if len(parentPath) > 0 {
 		depth = parentPath[len(parentPath)-1].Depth + 1
 	}
-	if err := o.st.SaveBranchPath(workspace.BranchPathSegment{
-		WorkspaceID:       newWSID,
-		ParentWorkspaceID: req.SourceWorkspaceID,
-		BranchSeq:         req.BranchFromSeq,
-		Ordinal:           ordinal,
-		Depth:             depth,
+	if err := o.st.CreateBranchedWorkspace(store.BranchedWorkspaceCreate{
+		SourceWorkspaceID: req.SourceWorkspaceID,
+		ChildWorkspace:    childWS,
+		ChildSession:      sess,
+		ChildLink: workspace.WorkspaceSession{
+			WorkspaceID: newWSID,
+			SessionID:   newSessID,
+			CreatedAt:   now,
+		},
+		ChildBranchPath: workspace.BranchPathSegment{
+			WorkspaceID:       newWSID,
+			ParentWorkspaceID: req.SourceWorkspaceID,
+			BranchSeq:         req.BranchFromSeq,
+			Ordinal:           ordinal,
+			Depth:             depth,
+		},
 	}); err != nil {
-		return nil, fmt.Errorf("save branch path: %w", err)
-	}
-
-	// Materialize worktree from the checkpoint ref
-	if err := os.MkdirAll(o.worktreeBase, 0o755); err != nil {
-		return nil, fmt.Errorf("create worktree base: %w", err)
-	}
-	if err := MaterializeRef(cp.GitRef, worktreePath, o.repoDir); err != nil {
-		return nil, fmt.Errorf("materialize worktree: %w", err)
+		cleanup()
+		return nil, fmt.Errorf("persist child workspace: %w", err)
 	}
 
 	return &BranchResult{
 		NewWorkspaceID: newWSID,
 		NewSessionID:   newSessID,
 		WorktreePath:   worktreePath,
-		GitRef:         cp.GitRef,
+		GitRef:         anchor.GitRef,
+		Anchor:         anchor,
 	}, nil
 }
 
@@ -166,16 +161,10 @@ func (o *Orchestrator) Switch(req SwitchRequest) error {
 		return fmt.Errorf("get target workspace: %w", err)
 	}
 
-	// If already active, nothing to do
-	if ws.Status == workspace.StatusActive {
-		return nil
-	}
-
 	if ws.Status == workspace.StatusMerged {
 		return fmt.Errorf("cannot switch to merged workspace %q", ws.ID)
 	}
 
-	// Re-materialize if worktree path is empty or doesn't exist
 	if ws.WorktreePath == "" || !pathExists(ws.WorktreePath) {
 		if ws.GitRef == "" {
 			return fmt.Errorf("workspace %q has no git ref to materialize", ws.ID)
@@ -192,7 +181,28 @@ func (o *Orchestrator) Switch(req SwitchRequest) error {
 		}
 	}
 
-	// Activate the workspace
+	rootID, err := o.st.LineageRootWorkspaceID(ws.ID)
+	if err != nil {
+		return fmt.Errorf("resolve lineage root: %w", err)
+	}
+	lineage, err := o.st.ListLineageWorkspaces(rootID)
+	if err != nil {
+		return fmt.Errorf("list lineage workspaces: %w", err)
+	}
+	for _, candidate := range lineage {
+		if candidate.ID == ws.ID {
+			continue
+		}
+		if candidate.Status == workspace.StatusActive {
+			if err := o.st.UpdateWorkspaceStatus(candidate.ID, workspace.StatusFrozen); err != nil {
+				return fmt.Errorf("freeze active workspace %q: %w", candidate.ID, err)
+			}
+		}
+	}
+
+	if ws.Status == workspace.StatusActive {
+		return nil
+	}
 	return o.st.UpdateWorkspaceStatus(req.TargetWorkspaceID, workspace.StatusActive)
 }
 
@@ -204,4 +214,66 @@ func (o *Orchestrator) Freeze(workspaceID string) error {
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func defaultWorktreeBase(worktreeBase string) string {
+	if worktreeBase != "" {
+		return worktreeBase
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".peek", "worktrees")
+}
+
+func (o *Orchestrator) resolveBranchAnchor(workspaceID, sessionID string, seq int64) (BranchAnchorResolution, error) {
+	resolution := BranchAnchorResolution{
+		SessionID:   sessionID,
+		CutoffSeq:   seq,
+		WorkspaceID: workspaceID,
+	}
+
+	ev, err := o.st.GetEventBySeq(sessionID, seq)
+	if err == nil && ev.Type == event.EventToolCall {
+		cp, cpErr := o.st.ResolveCheckpoint(workspaceID, seq, workspace.SnapshotPreTool)
+		if cpErr != nil {
+			return BranchAnchorResolution{}, cpErr
+		}
+		resolution.SnapshotSeq = cp.Seq
+		resolution.SnapshotKind = cp.Kind
+		resolution.GitRef = cp.GitRef
+		return resolution, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return BranchAnchorResolution{}, err
+	}
+
+	preCp, preErr := o.st.ResolveCheckpoint(workspaceID, seq, workspace.SnapshotPreTool)
+	if preErr == nil && preCp.Seq == seq {
+		resolution.SnapshotSeq = preCp.Seq
+		resolution.SnapshotKind = preCp.Kind
+		resolution.GitRef = preCp.GitRef
+		return resolution, nil
+	}
+	if preErr != nil && preErr != sql.ErrNoRows {
+		return BranchAnchorResolution{}, preErr
+	}
+
+	cp, err := o.st.ResolveCheckpoint(workspaceID, seq, workspace.SnapshotPostTool)
+	if err == nil {
+		resolution.SnapshotSeq = cp.Seq
+		resolution.SnapshotKind = cp.Kind
+		resolution.GitRef = cp.GitRef
+		return resolution, nil
+	}
+	if err != sql.ErrNoRows {
+		return BranchAnchorResolution{}, err
+	}
+
+	cp, err = o.st.ResolveCheckpoint(workspaceID, seq, workspace.SnapshotPreTool)
+	if err != nil {
+		return BranchAnchorResolution{}, err
+	}
+	resolution.SnapshotSeq = cp.Seq
+	resolution.SnapshotKind = cp.Kind
+	resolution.GitRef = cp.GitRef
+	return resolution, nil
 }

@@ -82,6 +82,42 @@ CREATE TABLE IF NOT EXISTS branch_path_segments (
 	ordinal INTEGER NOT NULL DEFAULT 0,
 	depth INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS managed_runtimes (
+	id TEXT PRIMARY KEY,
+	root_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	active_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	active_session_id TEXT NOT NULL REFERENCES sessions(id),
+	source TEXT NOT NULL DEFAULT '',
+	launch_args_json TEXT NOT NULL DEFAULT '[]',
+	status TEXT NOT NULL DEFAULT 'running',
+	heartbeat_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_managed_runtimes_root ON managed_runtimes(root_workspace_id);
+CREATE INDEX IF NOT EXISTS idx_managed_runtimes_status ON managed_runtimes(status);
+
+CREATE TABLE IF NOT EXISTS managed_runtime_requests (
+	id TEXT PRIMARY KEY,
+	runtime_id TEXT NOT NULL REFERENCES managed_runtimes(id),
+	kind TEXT NOT NULL,
+	source_workspace_id TEXT,
+	branch_from_seq INTEGER,
+	target_workspace_id TEXT,
+	status TEXT NOT NULL DEFAULT 'pending',
+	response_workspace_id TEXT NOT NULL DEFAULT '',
+	response_session_id TEXT NOT NULL DEFAULT '',
+	response_worktree_path TEXT NOT NULL DEFAULT '',
+	response_git_ref TEXT NOT NULL DEFAULT '',
+	error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_managed_runtime_requests_runtime_status
+	ON managed_runtime_requests(runtime_id, status, created_at);
 `
 
 // migrations that add columns to existing tables. Each is idempotent —

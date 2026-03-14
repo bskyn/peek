@@ -42,31 +42,40 @@ func (o *Orchestrator) Merge(req MergeRequest) (*MergeResult, error) {
 		return nil, fmt.Errorf("get target workspace: %w", err)
 	}
 
-	// Ensure both workspaces have git refs
-	if branch.GitRef == "" {
-		return nil, fmt.Errorf("branch workspace %q has no git ref", req.BranchWorkspaceID)
-	}
 	if target.GitRef == "" && target.WorktreePath == "" {
 		return nil, fmt.Errorf("target workspace %q has no git ref or worktree", targetID)
 	}
 
-	// Ensure target worktree exists
 	targetWorktree := target.WorktreePath
 	if targetWorktree == "" || !pathExists(targetWorktree) {
 		return nil, fmt.Errorf("target workspace %q worktree not materialized", targetID)
 	}
 
-	// Attempt merge using git merge in the target worktree
-	mergeResult, err := gitMerge(targetWorktree, branch.GitRef)
+	mergeRef := branch.GitRef
+	if branch.WorktreePath != "" && pathExists(branch.WorktreePath) {
+		mergeRef, err = captureWorktreeAsRef(branch.WorktreePath, req.BranchWorkspaceID, o.repoDir)
+		if err != nil {
+			return nil, fmt.Errorf("capture live merge source: %w", err)
+		}
+		if err := o.st.UpdateWorkspaceGitRef(req.BranchWorkspaceID, mergeRef); err != nil {
+			return nil, fmt.Errorf("update live merge ref: %w", err)
+		}
+	}
+	if mergeRef == "" {
+		return nil, fmt.Errorf("branch workspace %q has no git ref", req.BranchWorkspaceID)
+	}
+
+	mergeResult, err := gitMerge(targetWorktree, mergeRef)
 	if err != nil {
 		return nil, fmt.Errorf("git merge: %w", err)
 	}
 
 	if mergeResult.Clean {
-		// Mark branch as merged
 		if err := o.st.UpdateWorkspaceStatus(req.BranchWorkspaceID, workspace.StatusMerged); err != nil {
 			return nil, fmt.Errorf("mark branch merged: %w", err)
 		}
+	} else if err := o.st.UpdateWorkspaceStatus(req.BranchWorkspaceID, workspace.StatusConflict); err != nil {
+		return nil, fmt.Errorf("mark branch conflicted: %w", err)
 	}
 
 	mergeResult.TargetWorktree = targetWorktree

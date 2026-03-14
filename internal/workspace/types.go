@@ -6,9 +6,11 @@ import "time"
 type WorkspaceStatus string
 
 const (
-	StatusActive WorkspaceStatus = "active"
-	StatusFrozen WorkspaceStatus = "frozen"
-	StatusMerged WorkspaceStatus = "merged"
+	StatusActive       WorkspaceStatus = "active"
+	StatusFrozen       WorkspaceStatus = "frozen"
+	StatusMergePending WorkspaceStatus = "merge_pending"
+	StatusConflict     WorkspaceStatus = "conflict"
+	StatusMerged       WorkspaceStatus = "merged"
 )
 
 // SnapshotKind distinguishes pre-tool and post-tool code snapshots.

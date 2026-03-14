@@ -19,7 +19,20 @@ export async function fetchSessionDetail(sessionID: string): Promise<SessionDeta
 }
 
 export async function fetchSessionEvents(sessionID: string): Promise<EventPage> {
-  return requestJSON<EventPage>(`/api/sessions/${encodeURIComponent(sessionID)}/events?limit=500`);
+  const encoded = encodeURIComponent(sessionID);
+  const allEvents: EventPage['events'] = [];
+  let afterSeq = -1;
+
+  while (true) {
+    const page = await requestJSON<EventPage>(
+      `/api/sessions/${encoded}/events?limit=500&after_seq=${afterSeq}`,
+    );
+    allEvents.push(...page.events);
+    if (!page.has_more) {
+      return { events: allEvents, has_more: false, next_after_seq: page.next_after_seq };
+    }
+    afterSeq = page.next_after_seq!;
+  }
 }
 
 export async function fetchViewerStatus(): Promise<ViewerStatus> {

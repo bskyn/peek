@@ -46,13 +46,22 @@ peek run codex -- --model o4-mini
 peek run claude --no-web
 ```
 
+Managed mode only accepts reusable provider options after `--`. Do not pass an initial prompt or provider subcommand there, because Peek needs to relaunch the same interactive session shape on branch/switch.
+
 Managed mode creates a workspace, tracks checkpoints around tool execution, and enables branching, freezing, switching, and merging.
+
+`peek run` keeps ownership of the live terminal. When you branch or switch, use a second terminal to send the control request while the original `peek run` process stays in charge of the provider CLI.
 
 ### Branching and workspaces
 
-Branch from any event sequence to explore alternate paths. The source workspace freezes and a new workspace materializes from the pre-tool code snapshot:
+Branch from any event sequence to explore alternate paths. Run `peek run ...` in one terminal, then issue branch/switch requests from another terminal. The source workspace freezes and the live managed terminal relaunches into the selected workspace:
 
 ```sh
+# Terminal A: keep the live managed session open
+peek run claude
+
+# Terminal B: inspect and control the live managed runtime
+
 # List workspaces
 peek workspace list
 
@@ -86,8 +95,9 @@ peek ws status ws-abc123
 #### Branch semantics
 
 - **Branch from a `tool_call`**: resolves to the pre-result code snapshot, so the child workspace starts from the state before the tool modified files.
-- **Freeze/switch**: the source workspace freezes on branch. Switch back re-materializes it from its git ref.
-- **Merge**: merges branch code into the parent workspace. On conflict, Peek stops and reports the target worktree path for manual resolution.
+- **Branch from a later card**: resolves to the latest completed post-tool snapshot at or before the selected sequence.
+- **Freeze/switch**: the source workspace freezes on branch. `peek workspace switch` freezes the currently active sibling and hands the live managed terminal back to the target workspace in place.
+- **Merge**: merges the branch's current worktree state into the parent workspace. On conflict, Peek stops and reports the target worktree path for manual resolution.
 - **Cool**: dematerializes inactive worktrees down to hidden git refs. Switch re-materializes on demand.
 
 ### Monitoring existing sessions
@@ -127,30 +137,6 @@ Codex sessions are discovered from `~/.codex/sessions/`. Set `CODEX_HOME` to ove
 
 </details>
 
-Events stream in real-time with sequential numbering:
-
-```
-  [1]  14:32:05  User
-     What files are in /tmp?
-
-  [2]  14:32:06  Thinking (142 tokens)
-     let me look at the files in /tmp...
-
-  [3]  14:32:06  Claude
-     Let me check that for you.
-
-  [4]  14:32:07  Tool: Bash
-     > {"command":"ls /tmp"}
-
-  [5]  14:32:08  Result
-     file1.txt
-     file2.txt
-     ... 10 more lines
-
-  [6]  14:32:09  Claude
-     Here are the files in /tmp: ...
-```
-
 ### Session management
 
 ```sh
@@ -165,14 +151,6 @@ peek sessions delete --all
 # Reload all Claude and Codex sessions from disk
 peek sessions load --all
 ```
-
-## How it works
-
-Peek has two modes:
-
-- **Managed mode** (`peek run claude|codex`) launches the native CLI in a Peek-owned workspace. Peek captures pre-tool and post-tool code snapshots as hidden git refs, enabling branching from any point in the conversation. Workspaces can be frozen, switched, merged, and cooled to ref-only storage.
-
-- **Passive mode** (`peek claude|codex`) reads session files from Claude and Codex CLI and monitors them in real-time using filesystem notifications. Each JSONL event is parsed, normalized into a canonical event model, rendered to the terminal, and persisted to a local SQLite database.
 
 ## Development
 

@@ -29,7 +29,7 @@ func newRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Launch a managed agent session",
-		Long:  "Launch a Peek-managed agent session with workspace lifecycle control (branching, checkpoints, freeze/switch).",
+		Long:  "Launch a Peek-managed agent session that keeps the current terminal attached while `peek workspace branch` and `peek workspace switch` control it from another terminal.",
 	}
 
 	cmd.AddCommand(newRunClaudeCmd())
@@ -41,7 +41,7 @@ func newRunCmd() *cobra.Command {
 func newRunClaudeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "claude [flags] [-- extra-args...]",
-		Short: "Launch a managed Claude session",
+		Short: "Launch a managed Claude session in the live terminal",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runManaged(managed.SourceClaude, args)
@@ -54,7 +54,7 @@ func newRunClaudeCmd() *cobra.Command {
 func newRunCodexCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "codex [flags] [-- extra-args...]",
-		Short: "Launch a managed Codex session",
+		Short: "Launch a managed Codex session in the live terminal",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runManaged(managed.SourceCodex, args)
@@ -65,6 +65,11 @@ func newRunCodexCmd() *cobra.Command {
 }
 
 func runManaged(source managed.Source, extraArgs []string) error {
+	launchArgs, err := managed.PrepareManagedLaunchArgs(source, extraArgs)
+	if err != nil {
+		return err
+	}
+
 	projectDir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
@@ -83,6 +88,7 @@ func runManaged(source managed.Source, extraArgs []string) error {
 	// Generate IDs
 	wsID := fmt.Sprintf("ws-%s", uuid.New().String()[:8])
 	sessID := fmt.Sprintf("%s-managed-%s", source, uuid.New().String()[:8])
+	runtimeID := fmt.Sprintf("rt-%s", uuid.New().String()[:8])
 	now := time.Now().UTC()
 
 	// Create workspace — marked as root since it's the primary checkout
@@ -150,54 +156,71 @@ func runManaged(source managed.Source, extraArgs []string) error {
 		fmt.Printf("Peek workspace: %s\n\n", wsID)
 	}
 
-	// Snapshot existing session files so we can detect the new one
-	knownFiles := snapshotSessionFiles(source)
+	orch := managed.NewOrchestrator(st, absProjectDir, managedWorktreeBase())
+	supervisor := newManagedSupervisor(
+		st,
+		rt,
+		orch,
+		source,
+		launchArgs,
+		runtimeID,
+		wsID,
+		wsID,
+		sessID,
+		managedLaunchConfig{},
+	)
 
-	// Launch the native CLI interactively — it gets the user's terminal
-	mr := managed.New(managed.RunRequest{
-		Source:     source,
-		ProjectDir: absProjectDir,
-		Args:       extraArgs,
-	})
-	mr.WorkspaceID = wsID
-
-	if err := mr.Start(ctx); err != nil {
-		return fmt.Errorf("start managed runtime: %w", err)
+	if err := supervisor.Run(ctx); err != nil {
+		return err
 	}
-
-	// Create checkpoint engine for this workspace
-	ce := managed.NewCheckpointEngine(st, wsID, sessID, absProjectDir)
-
-	// In the background, discover the session file that the CLI creates and tail it.
-	// Events flow into the store + viewer, and checkpoints are captured around tool execution.
-	go tailManagedSession(ctx, st, rt, sessID, source, knownFiles, absProjectDir, ce)
-
-	// Wait for the interactive CLI to exit
-	_ = mr.Wait()
-
-	// Update workspace status
-	_ = st.UpdateWorkspaceStatus(wsID, workspace.StatusFrozen)
 
 	fmt.Printf("\nPeek: workspace %s frozen.\n", wsID)
 	return nil
 }
 
-// tailManagedSession discovers the JSONL file created by the spawned CLI and tails it silently,
-// capturing checkpoints around tool execution events.
-func tailManagedSession(ctx context.Context, st *store.Store, rt *viewer.Runtime, sessID string, source managed.Source, knownFiles map[string]bool, projectDir string, ce *managed.CheckpointEngine) {
-	switch source {
+// tailManagedLaunch discovers or resumes the provider session file for one managed launch
+// and tails it silently while checkpoints are captured around tool execution.
+func tailManagedLaunch(ctx context.Context, st *store.Store, rt *viewer.Runtime, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
+	switch {
+	case spec.SourceSessionID != "":
+		tailManagedExistingSession(ctx, st, rt, spec, ce)
+	default:
+		tailManagedNewSession(ctx, st, rt, spec, ce)
+	}
+}
+
+func tailManagedNewSession(ctx context.Context, st *store.Store, rt *viewer.Runtime, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
+	knownFiles := snapshotSessionFiles(spec.Source)
+	switch spec.Source {
 	case managed.SourceClaude:
-		csf := waitForNewClaudeSession(ctx, knownFiles, projectDir)
-		if csf == nil {
+		sf := waitForNewClaudeSession(ctx, knownFiles, spec.WorktreePath)
+		if sf == nil {
 			return
 		}
-		tailClaudeSilent(ctx, st, rt, sessID, csf, ce)
+		tailClaudeSilent(ctx, st, rt, spec.SessionID, sf, ce)
 	case managed.SourceCodex:
-		xsf := waitForNewCodexSession(ctx, knownFiles, projectDir)
-		if xsf == nil {
+		sf := waitForNewCodexSession(ctx, knownFiles, spec.WorktreePath)
+		if sf == nil {
 			return
 		}
-		tailCodexSilent(ctx, st, rt, sessID, xsf, ce)
+		tailCodexSilent(ctx, st, rt, spec.SessionID, sf, ce)
+	}
+}
+
+func tailManagedExistingSession(ctx context.Context, st *store.Store, rt *viewer.Runtime, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
+	switch spec.Source {
+	case managed.SourceClaude:
+		sf, err := claude.Discover(homeDir()+"/.claude", spec.SourceSessionID)
+		if err != nil {
+			return
+		}
+		tailClaudeSilent(ctx, st, rt, spec.SessionID, sf, ce)
+	case managed.SourceCodex:
+		sf, err := codex.Discover(codex.CodexHome(), spec.SourceSessionID)
+		if err != nil {
+			return
+		}
+		tailCodexSilent(ctx, st, rt, spec.SessionID, sf, ce)
 	}
 }
 
@@ -267,13 +290,11 @@ func waitForNewCodexSession(ctx context.Context, knownFiles map[string]bool, pro
 // tailClaudeSilent tails a Claude session file, persisting events to the store + viewer
 // without rendering to terminal. Captures checkpoints around tool_call/tool_result events.
 func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, sessID string, sf *claude.SessionFile, ce *managed.CheckpointEngine) {
-	realInternalID := "claude-" + sf.SessionID
 	_ = st.CreateSession(event.Session{
-		ID:              realInternalID,
+		ID:              sessID,
 		Source:          "claude",
 		ProjectPath:     sf.ProjectPath,
 		SourceSessionID: sf.SessionID,
-		ParentSessionID: sessID,
 		CreatedAt:       time.Now().UTC(),
 		UpdatedAt:       time.Now().UTC(),
 	})
@@ -283,7 +304,7 @@ func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, 
 	}
 
 	tl := tailer.New(sf.Path)
-	var seq int64
+	startOffset, seq := managedTailCursor(st, sf.Path, sessID)
 	annotator := newUsageAnnotator(st, sessID, true)
 
 	var wg sync.WaitGroup
@@ -315,7 +336,7 @@ func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, 
 		}
 	}()
 
-	finalOffset, _ := tl.Tail(ctx, 0)
+	finalOffset, _ := tl.Tail(ctx, startOffset)
 	wg.Wait()
 
 	if !insertFailed.Load() {
@@ -329,13 +350,11 @@ func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, 
 
 // tailCodexSilent tails a Codex session file silently with checkpoint capture.
 func tailCodexSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, sessID string, sf *codex.SessionFile, ce *managed.CheckpointEngine) {
-	realInternalID := "codex-" + sf.SessionID
 	_ = st.CreateSession(event.Session{
-		ID:              realInternalID,
+		ID:              sessID,
 		Source:          "codex",
 		ProjectPath:     sf.ProjectPath,
 		SourceSessionID: sf.SessionID,
-		ParentSessionID: sessID,
 		CreatedAt:       time.Now().UTC(),
 		UpdatedAt:       time.Now().UTC(),
 	})
@@ -345,7 +364,7 @@ func tailCodexSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, s
 	}
 
 	tl := tailer.New(sf.Path)
-	var seq int64
+	startOffset, seq := managedTailCursor(st, sf.Path, sessID)
 	annotator := newUsageAnnotator(st, sessID, true)
 
 	var wg sync.WaitGroup
@@ -377,7 +396,7 @@ func tailCodexSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, s
 		}
 	}()
 
-	finalOffset, _ := tl.Tail(ctx, 0)
+	finalOffset, _ := tl.Tail(ctx, startOffset)
 	wg.Wait()
 
 	if !insertFailed.Load() {
@@ -387,6 +406,18 @@ func tailCodexSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, s
 			SessionID:  sessID,
 		})
 	}
+}
+
+func managedTailCursor(st *store.Store, path, sessionID string) (int64, int64) {
+	var offset int64
+	if cursor, err := st.GetCursor(path); err == nil && cursor.SessionID == sessionID {
+		offset = cursor.ByteOffset
+	}
+	maxSeq, err := st.MaxSeq(sessionID)
+	if err != nil || maxSeq < 0 {
+		return offset, 0
+	}
+	return offset, maxSeq + 1
 }
 
 // captureCheckpointForEvent captures pre-tool or post-tool checkpoints based on event type.

@@ -1,6 +1,7 @@
 package managed
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,7 @@ func setupBranchTest(t *testing.T) (*store.Store, *Orchestrator, *CheckpointEngi
 	t.Helper()
 	dir := testGitRepo(t)
 	st := testStoreForCheckpoint(t)
+	worktreeBase := filepath.Join(t.TempDir(), "worktrees")
 	now := time.Now().UTC()
 
 	// Create session and workspace
@@ -42,7 +44,7 @@ func setupBranchTest(t *testing.T) (*store.Store, *Orchestrator, *CheckpointEngi
 	}
 
 	ce := NewCheckpointEngine(st, "ws-root", "s1", dir)
-	orch := NewOrchestrator(st, dir)
+	orch := NewOrchestrator(st, dir, worktreeBase)
 
 	return st, orch, ce, dir
 }
@@ -189,7 +191,7 @@ func TestSwitchReactivatesFrozenWorkspace(t *testing.T) {
 	}
 
 	// Branch (freezes source)
-	_, err := orch.Branch(BranchRequest{
+	result, err := orch.Branch(BranchRequest{
 		SourceWorkspaceID: "ws-root",
 		BranchFromSeq:     0,
 	})
@@ -208,6 +210,14 @@ func TestSwitchReactivatesFrozenWorkspace(t *testing.T) {
 	}
 	if ws.Status != workspace.StatusActive {
 		t.Errorf("expected active after switch, got %s", ws.Status)
+	}
+
+	child, err := st.GetWorkspace(result.NewWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Status != workspace.StatusFrozen {
+		t.Errorf("expected child frozen after switch, got %s", child.Status)
 	}
 }
 
@@ -231,4 +241,69 @@ func TestSwitchAlreadyActiveIsNoop(t *testing.T) {
 	if err := orch.Switch(SwitchRequest{TargetWorkspaceID: "ws-root"}); err != nil {
 		t.Fatalf("switch to active should be noop: %v", err)
 	}
+}
+
+func TestBranchFromLaterCardUsesLatestPostToolCheckpoint(t *testing.T) {
+	st, orch, ce, dir := setupBranchTest(t)
+
+	if err := ce.CapturePreTool(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "post_tool.txt"), []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ce.CapturePostTool(3); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.InsertEvent(event.Event{
+		ID:          "ev-5",
+		SessionID:   "s1",
+		Timestamp:   time.Now().UTC(),
+		Seq:         5,
+		Type:        event.EventAssistantMessage,
+		PayloadJSON: mustJSONPayload(t, map[string]string{"text": "after the tool ran"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := orch.Branch(BranchRequest{
+		SourceWorkspaceID: "ws-root",
+		BranchFromSeq:     5,
+	})
+	if err != nil {
+		t.Fatalf("branch: %v", err)
+	}
+	if result.Anchor.SnapshotKind != workspace.SnapshotPostTool {
+		t.Fatalf("expected post-tool snapshot, got %s", result.Anchor.SnapshotKind)
+	}
+	if result.Anchor.SnapshotSeq != 3 {
+		t.Fatalf("expected snapshot seq 3, got %d", result.Anchor.SnapshotSeq)
+	}
+	if _, err := os.Stat(filepath.Join(result.WorktreePath, "post_tool.txt")); err != nil {
+		t.Fatalf("expected post_tool.txt in child worktree: %v", err)
+	}
+
+	childSession, err := st.GetSession(result.NewSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childSession.Source != "claude" {
+		t.Fatalf("expected child session source claude, got %q", childSession.Source)
+	}
+	if childSession.ParentSessionID != "s1" {
+		t.Fatalf("expected parent session s1, got %q", childSession.ParentSessionID)
+	}
+	if childSession.ProjectPath != result.WorktreePath {
+		t.Fatalf("expected child session project path %q, got %q", result.WorktreePath, childSession.ProjectPath)
+	}
+}
+
+func mustJSONPayload(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

@@ -2,7 +2,9 @@ package managed
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -21,8 +23,13 @@ const (
 // RunRequest describes a managed session launch.
 type RunRequest struct {
 	Source     Source
+	Command    string
 	ProjectDir string
 	Args       []string // extra args passed to the native CLI
+	Env        []string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
 }
 
 // Runtime supervises a native CLI subprocess for a managed workspace.
@@ -62,12 +69,11 @@ func (r *Runtime) Start(ctx context.Context) error {
 	bin, args := r.buildCommand()
 	r.cmd = exec.CommandContext(ctx, bin, args...)
 	r.cmd.Dir = r.req.ProjectDir
-	r.cmd.Env = append(os.Environ(), "PEEK_MANAGED=1")
+	r.cmd.Env = append(append(os.Environ(), r.req.Env...), "PEEK_MANAGED=1")
 
-	// Connect directly to the user's terminal for interactive use
-	r.cmd.Stdin = os.Stdin
-	r.cmd.Stdout = os.Stdout
-	r.cmd.Stderr = os.Stderr
+	r.cmd.Stdin = valueOrDefaultReader(r.req.Stdin, os.Stdin)
+	r.cmd.Stdout = valueOrDefaultWriter(r.req.Stdout, os.Stdout)
+	r.cmd.Stderr = valueOrDefaultWriter(r.req.Stderr, os.Stderr)
 
 	if err := r.cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", bin, err)
@@ -101,17 +107,30 @@ func (r *Runtime) Done() <-chan struct{} {
 }
 
 // Stop sends an interrupt to the subprocess and waits for exit.
-func (r *Runtime) Stop() {
+func (r *Runtime) StopGracefully(ctx context.Context) error {
 	r.mu.Lock()
 	cmd := r.cmd
 	r.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Signal(os.Interrupt)
 	}
-	<-r.done
+	select {
+	case <-r.done:
+	case <-ctx.Done():
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-r.done
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.exitErr
 }
 
 func (r *Runtime) buildCommand() (string, []string) {
+	if r.req.Command != "" {
+		return r.req.Command, r.req.Args
+	}
 	switch r.req.Source {
 	case SourceClaude:
 		// Launch Claude interactively — no --print flag
@@ -121,4 +140,53 @@ func (r *Runtime) buildCommand() (string, []string) {
 	default:
 		return string(r.req.Source), r.req.Args
 	}
+}
+
+// RunExitError preserves the wrapped provider's real exit code.
+type RunExitError struct {
+	Source Source
+	Code   int
+	Err    error
+}
+
+func (e *RunExitError) Error() string {
+	return fmt.Sprintf("%s exited with code %d: %v", e.Source, e.Code, e.Err)
+}
+
+func (e *RunExitError) Unwrap() error {
+	return e.Err
+}
+
+func (e *RunExitError) ExitCode() int {
+	return e.Code
+}
+
+// WrapRunExitError converts exec exit errors into an error with a stable exit code.
+func WrapRunExitError(source Source, err error) error {
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return err
+	}
+	return &RunExitError{
+		Source: source,
+		Code:   exitErr.ExitCode(),
+		Err:    err,
+	}
+}
+
+func valueOrDefaultReader(r io.Reader, fallback *os.File) io.Reader {
+	if r != nil {
+		return r
+	}
+	return fallback
+}
+
+func valueOrDefaultWriter(w io.Writer, fallback *os.File) io.Writer {
+	if w != nil {
+		return w
+	}
+	return fallback
 }
