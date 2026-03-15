@@ -780,6 +780,84 @@ func TestDeleteWorkspaceRejectsParentWithChildren(t *testing.T) {
 	}
 }
 
+func TestDeleteWorkspaceRehomesStoppedManagedRuntimeReference(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := s.CreateSession(testSession("s-root", now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(testSession("s-child", now)); err != nil {
+		t.Fatal(err)
+	}
+
+	root := workspace.Workspace{
+		ID: "ws-root", Status: workspace.StatusFrozen, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	branchSeq := int64(2)
+	child := workspace.Workspace{
+		ID: "ws-child", ParentWorkspaceID: "ws-root", Status: workspace.StatusFrozen,
+		ProjectPath: "/test", BranchFromSeq: &branchSeq, CreatedAt: now, UpdatedAt: now,
+	}
+	for _, w := range []workspace.Workspace{root, child} {
+		if err := s.CreateWorkspace(w); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-root", SessionID: "s-root", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-child", SessionID: "s-child", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.UpsertManagedRuntime(ManagedRuntime{
+		ID:                "rt-1",
+		RootWorkspaceID:   "ws-root",
+		ActiveWorkspaceID: "ws-child",
+		ActiveSessionID:   "s-child",
+		Source:            "claude",
+		Status:            ManagedRuntimeStopped,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := s.DeleteWorkspace("ws-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Fatal("expected workspace to be deleted")
+	}
+
+	if _, err := s.GetWorkspace("ws-child"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected workspace to be gone, got %v", err)
+	}
+
+	rt, err := s.GetManagedRuntime("rt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Status != ManagedRuntimeStopped {
+		t.Fatalf("expected stopped runtime, got %s", rt.Status)
+	}
+	if rt.ActiveWorkspaceID != "ws-root" {
+		t.Fatalf("expected runtime rehomed to root workspace, got %s", rt.ActiveWorkspaceID)
+	}
+	if rt.ActiveSessionID != "s-root" {
+		t.Fatalf("expected runtime rehomed to root session, got %s", rt.ActiveSessionID)
+	}
+}
+
 func TestMigrationIdempotency(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 

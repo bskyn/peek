@@ -172,6 +172,23 @@ func (s *Store) UpdateManagedRuntimeStatus(id string, status ManagedRuntimeStatu
 	return err
 }
 
+// ParkManagedRuntime marks a runtime stopped and rehomes its active pointers to
+// the lineage root so frozen branch workspaces are not pinned by stale metadata.
+func (s *Store) ParkManagedRuntime(id, rootWorkspaceID, fallbackSessionID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if err := parkManagedRuntimeTx(tx, id, rootWorkspaceID, fallbackSessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // CreateManagedRuntimeRequest inserts a runtime request. Duplicate IDs are ignored.
 func (s *Store) CreateManagedRuntimeRequest(req ManagedRuntimeRequest) error {
 	var branchSeq any
@@ -324,6 +341,48 @@ func scanManagedRuntime(scanner sessionSummaryScanner) (*ManagedRuntime, error) 
 	rt.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	rt.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 	return &rt, nil
+}
+
+func parkManagedRuntimeTx(tx *sql.Tx, id, rootWorkspaceID, fallbackSessionID string) error {
+	activeSessionID := fallbackSessionID
+	rootSessionID, err := latestWorkspaceSessionIDTx(tx, rootWorkspaceID)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if rootSessionID != "" {
+		activeSessionID = rootSessionID
+	}
+
+	_, err = tx.Exec(
+		`UPDATE managed_runtimes
+		    SET status = ?,
+		        active_workspace_id = ?,
+		        active_session_id = ?,
+		        updated_at = ?
+		  WHERE id = ?`,
+		string(ManagedRuntimeStopped),
+		rootWorkspaceID,
+		activeSessionID,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		id,
+	)
+	return err
+}
+
+func latestWorkspaceSessionIDTx(tx *sql.Tx, workspaceID string) (string, error) {
+	var sessionID string
+	err := tx.QueryRow(
+		`SELECT session_id
+		   FROM workspace_sessions
+		  WHERE workspace_id = ?
+		  ORDER BY created_at DESC, session_id DESC
+		  LIMIT 1`,
+		workspaceID,
+	).Scan(&sessionID)
+	if err != nil {
+		return "", err
+	}
+	return sessionID, nil
 }
 
 func scanManagedRuntimeRequest(scanner sessionSummaryScanner) (*ManagedRuntimeRequest, error) {

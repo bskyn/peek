@@ -156,6 +156,108 @@ func TestManagedSupervisorBranchAndSwitchHandoff(t *testing.T) {
 	}
 }
 
+func TestManagedSupervisorParksStoppedRuntimeAtRoot(t *testing.T) {
+	repoDir := testManagedRepo(t)
+	worktreeBase := filepath.Join(t.TempDir(), "worktrees")
+	logPath := filepath.Join(t.TempDir(), "launches.log")
+	scriptPath := writeManagedStub(t, logPath)
+	st := openManagedStore(t)
+	now := time.Now().UTC()
+
+	if err := st.CreateSession(event.Session{
+		ID:              "s-root",
+		Source:          string(managed.SourceClaude),
+		ProjectPath:     repoDir,
+		SourceSessionID: "claude-root-source",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkspace(workspace.Workspace{
+		ID: "ws-root", Status: workspace.StatusActive, ProjectPath: repoDir, WorktreePath: repoDir, IsRoot: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-root", SessionID: "s-root", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveBranchPath(workspace.BranchPathSegment{
+		WorkspaceID: "ws-root", Depth: 0, Ordinal: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.AppendEvents([]event.Event{
+		{ID: "e0", SessionID: "s-root", Timestamp: now, Seq: 0, Type: event.EventUserMessage, PayloadJSON: mustJSONForCLI(t, map[string]string{"text": "branch this"})},
+		{ID: "e3", SessionID: "s-root", Timestamp: now, Seq: 3, Type: event.EventToolCall, PayloadJSON: mustJSONForCLI(t, map[string]any{"tool_name": "Bash", "input": map[string]string{"command": "ls"}})},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ce := managed.NewCheckpointEngine(st, "ws-root", "s-root", repoDir)
+	if err := ce.CapturePreTool(3); err != nil {
+		t.Fatal(err)
+	}
+
+	supervisor := newManagedSupervisor(
+		st,
+		nil,
+		managed.NewOrchestrator(st, repoDir, worktreeBase),
+		managed.SourceClaude,
+		nil,
+		"rt-root",
+		"ws-root",
+		"ws-root",
+		"s-root",
+		managedLaunchConfig{
+			command: scriptPath,
+			env:     []string{"PEEK_TEST_LAUNCH_LOG=" + logPath},
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- supervisor.Run(ctx)
+	}()
+
+	waitForManagedRuntime(t, st, "ws-root")
+
+	branchReq, err := enqueueManagedBranchRequest(st, "ws-root", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branchReq.ResponseWorkspaceID == "" {
+		t.Fatalf("expected branch response payload, got %#v", branchReq)
+	}
+	waitForSupervisorWorkspace(t, supervisor, branchReq.ResponseWorkspaceID, branchReq.ResponseSessionID)
+
+	cancel()
+	if err := <-errCh; err != nil {
+		var exitCoder interface{ ExitCode() int }
+		if !errors.As(err, &exitCoder) {
+			t.Fatalf("expected exit-coded error on shutdown, got %v", err)
+		}
+	}
+
+	rt, err := st.GetManagedRuntime("rt-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Status != store.ManagedRuntimeStopped {
+		t.Fatalf("expected stopped runtime, got %s", rt.Status)
+	}
+	if rt.ActiveWorkspaceID != "ws-root" {
+		t.Fatalf("expected runtime parked at root, got %s", rt.ActiveWorkspaceID)
+	}
+	if rt.ActiveSessionID != "s-root" {
+		t.Fatalf("expected runtime parked at root session, got %s", rt.ActiveSessionID)
+	}
+}
+
 func TestEnqueueManagedSwitchRequestRejectsStaleRuntime(t *testing.T) {
 	st := openManagedStore(t)
 	now := time.Now().UTC()
@@ -319,6 +421,18 @@ func waitForManagedRuntime(t *testing.T, st *store.Store, workspaceID string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for live managed runtime for %s", workspaceID)
+}
+
+func waitForSupervisorWorkspace(t *testing.T, supervisor *managedSupervisor, workspaceID, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if supervisor.activeWorkspaceID == workspaceID && supervisor.activeSessionID == sessionID {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for supervisor to switch to %s/%s", workspaceID, sessionID)
 }
 
 func waitForLaunches(t *testing.T, logPath string, want int) []string {

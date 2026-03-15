@@ -87,7 +87,7 @@ func (s *managedSupervisor) Run(ctx context.Context) error {
 		return fmt.Errorf("register managed runtime: %w", err)
 	}
 	defer func() {
-		_ = s.st.UpdateManagedRuntimeStatus(s.runtimeID, store.ManagedRuntimeStopped, s.activeWorkspaceID, s.activeSessionID)
+		_ = s.st.ParkManagedRuntime(s.runtimeID, s.rootWorkspaceID, s.activeSessionID)
 	}()
 
 	activeWorkspace, err := s.st.GetWorkspace(s.activeWorkspaceID)
@@ -180,7 +180,6 @@ func (s *managedSupervisor) runLaunch(ctx context.Context, spec managed.ResumeSp
 		case err := <-waitCh:
 			cancel()
 			_ = s.st.UpdateWorkspaceStatus(spec.WorkspaceID, workspace.StatusFrozen)
-			_ = s.st.UpdateManagedRuntimeStatus(s.runtimeID, store.ManagedRuntimeStopped, spec.WorkspaceID, spec.SessionID)
 			return spec, spec.WorkspaceID, spec.SessionID, managed.WrapRunExitError(s.source, err), true
 		}
 	}

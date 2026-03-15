@@ -439,6 +439,48 @@ func (s *Store) DeleteWorkspace(id string) (bool, error) {
 		return false, fmt.Errorf("workspace %q has child workspaces; delete them first", id)
 	}
 
+	rows, err := tx.Query(
+		`SELECT id, root_workspace_id, active_session_id, status
+		   FROM managed_runtimes
+		  WHERE active_workspace_id = ?`,
+		id,
+	)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	type runtimeRef struct {
+		id              string
+		rootWorkspaceID string
+		activeSessionID string
+		status          ManagedRuntimeStatus
+	}
+
+	var runtimeRefs []runtimeRef
+	for rows.Next() {
+		var ref runtimeRef
+		if err := rows.Scan(&ref.id, &ref.rootWorkspaceID, &ref.activeSessionID, &ref.status); err != nil {
+			return false, err
+		}
+		runtimeRefs = append(runtimeRefs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+
+	for _, ref := range runtimeRefs {
+		if ref.rootWorkspaceID == id {
+			return false, fmt.Errorf("workspace %q is still the root of managed runtime %q", id, ref.id)
+		}
+		if ref.status != ManagedRuntimeStopped {
+			return false, fmt.Errorf("workspace %q is still referenced by managed runtime %q", id, ref.id)
+		}
+		if err := parkManagedRuntimeTx(tx, ref.id, ref.rootWorkspaceID, ref.activeSessionID); err != nil {
+			return false, err
+		}
+	}
+
 	if _, err := tx.Exec(`DELETE FROM checkpoints WHERE workspace_id = ?`, id); err != nil {
 		return false, err
 	}
@@ -453,7 +495,7 @@ func (s *Store) DeleteWorkspace(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	rows, err := result.RowsAffected()
+	affected, err := result.RowsAffected()
 	if err != nil {
 		return false, err
 	}
@@ -461,7 +503,7 @@ func (s *Store) DeleteWorkspace(id string) (bool, error) {
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return rows > 0, nil
+	return affected > 0, nil
 }
 
 // -- helpers --
