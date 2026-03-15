@@ -431,6 +431,14 @@ func (s *Store) DeleteWorkspace(id string) (bool, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	var childCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM workspaces WHERE parent_workspace_id = ?`, id).Scan(&childCount); err != nil {
+		return false, err
+	}
+	if childCount > 0 {
+		return false, fmt.Errorf("workspace %q has child workspaces; delete them first", id)
+	}
+
 	if _, err := tx.Exec(`DELETE FROM checkpoints WHERE workspace_id = ?`, id); err != nil {
 		return false, err
 	}
@@ -438,13 +446,6 @@ func (s *Store) DeleteWorkspace(id string) (bool, error) {
 		return false, err
 	}
 	if _, err := tx.Exec(`DELETE FROM branch_path_segments WHERE workspace_id = ?`, id); err != nil {
-		return false, err
-	}
-	// Unlink children
-	if _, err := tx.Exec(`UPDATE workspaces SET parent_workspace_id = NULL WHERE parent_workspace_id = ?`, id); err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(`DELETE FROM branch_path_segments WHERE parent_workspace_id = ?`, id); err != nil {
 		return false, err
 	}
 

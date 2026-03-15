@@ -25,6 +25,7 @@ func newWorkspaceCmd() *cobra.Command {
 	cmd.AddCommand(newWorkspaceMergeCmd())
 	cmd.AddCommand(newWorkspaceFreezeCmd())
 	cmd.AddCommand(newWorkspaceCoolCmd())
+	cmd.AddCommand(newWorkspaceDeleteCmd())
 	cmd.AddCommand(newWorkspaceStatusCmd())
 
 	return cmd
@@ -222,6 +223,37 @@ func newWorkspaceCoolCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newWorkspaceDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <workspace-id>",
+		Short: "Delete an inactive branch workspace",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if err := runWorkspaceDelete(args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("Deleted workspace %s.\n", args[0])
+			return nil
+		},
+	}
+}
+
+func runWorkspaceDelete(workspaceID string) error {
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	projectDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	orch := managed.NewOrchestrator(st, projectDir, managedWorktreeBase())
+	return orch.DeleteWorkspace(workspaceID)
 }
 
 func newWorkspaceStatusCmd() *cobra.Command {

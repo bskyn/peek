@@ -80,6 +80,9 @@ peek workspace merge ws-def456
 # Dematerialize a frozen workspace to ref-only storage
 peek workspace cool ws-abc123
 
+# Delete an inactive leaf branch workspace
+peek workspace delete ws-abc123
+
 # Show workspace details, lineage, and children
 peek workspace status ws-abc123
 ```
@@ -99,6 +102,7 @@ peek ws status ws-abc123
 - **Freeze/switch**: the source workspace freezes on branch. `peek workspace switch` freezes the currently active sibling and hands the live managed terminal back to the target workspace in place.
 - **Merge**: merges the branch's current worktree state into the parent workspace. On conflict, Peek stops and reports the target worktree path for manual resolution.
 - **Cool**: dematerializes inactive worktrees down to hidden git refs. Switch re-materializes on demand.
+- **Delete**: removes an inactive leaf branch workspace, including its linked git worktree. Root workspaces, active workspaces, and parents with children are rejected.
 
 ### Monitoring existing sessions
 

@@ -659,7 +659,7 @@ func TestBranchPathSiblingStability(t *testing.T) {
 	}
 }
 
-func TestDeleteWorkspace(t *testing.T) {
+func TestDeleteWorkspaceLeaf(t *testing.T) {
 	s := testStore(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
@@ -681,14 +681,14 @@ func TestDeleteWorkspace(t *testing.T) {
 		}
 	}
 
-	// Add session link and checkpoint to parent
+	// Add session link and checkpoint to child
 	if err := s.LinkWorkspaceSession(workspace.WorkspaceSession{
-		WorkspaceID: "ws-parent", SessionID: "s1", CreatedAt: now,
+		WorkspaceID: "ws-child", SessionID: "s1", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateCheckpoint(workspace.CheckpointRef{
-		ID: "cp-1", WorkspaceID: "ws-parent", SessionID: "s1",
+		ID: "cp-1", WorkspaceID: "ws-child", SessionID: "s1",
 		Seq: 0, Kind: workspace.SnapshotPreTool, GitRef: "ref1", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
@@ -698,8 +698,15 @@ func TestDeleteWorkspace(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.SaveBranchPath(workspace.BranchPathSegment{
+		WorkspaceID:       "ws-child",
+		ParentWorkspaceID: "ws-parent",
+		Depth:             1,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
-	deleted, err := s.DeleteWorkspace("ws-parent")
+	deleted, err := s.DeleteWorkspace("ws-child")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +715,7 @@ func TestDeleteWorkspace(t *testing.T) {
 	}
 
 	// Workspace gone
-	if _, err := s.GetWorkspace("ws-parent"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.GetWorkspace("ws-child"); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("expected workspace to be gone, got %v", err)
 	}
 
@@ -717,13 +724,59 @@ func TestDeleteWorkspace(t *testing.T) {
 		t.Errorf("expected checkpoint to be gone, got %v", err)
 	}
 
-	// Child's parent cleared
-	gotChild, err := s.GetWorkspace("ws-child")
+	// Parent remains intact
+	gotParent, err := s.GetWorkspace("ws-parent")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotChild.ParentWorkspaceID != "" {
-		t.Errorf("expected child parent cleared, got %q", gotChild.ParentWorkspaceID)
+	if gotParent.ID != "ws-parent" {
+		t.Errorf("expected parent workspace to remain, got %q", gotParent.ID)
+	}
+}
+
+func TestDeleteWorkspaceRejectsParentWithChildren(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	parent := workspace.Workspace{
+		ID: "ws-parent", Status: workspace.StatusFrozen, ProjectPath: "/test",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	child := workspace.Workspace{
+		ID: "ws-child", ParentWorkspaceID: "ws-parent", Status: workspace.StatusFrozen,
+		ProjectPath: "/test", CreatedAt: now, UpdatedAt: now,
+	}
+	for _, w := range []workspace.Workspace{parent, child} {
+		if err := s.CreateWorkspace(w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SaveBranchPath(workspace.BranchPathSegment{
+		WorkspaceID: "ws-parent", Depth: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveBranchPath(workspace.BranchPathSegment{
+		WorkspaceID:       "ws-child",
+		ParentWorkspaceID: "ws-parent",
+		Depth:             1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := s.DeleteWorkspace("ws-parent")
+	if err == nil {
+		t.Fatal("expected error deleting parent workspace")
+	}
+	if deleted {
+		t.Fatal("expected delete result to be false")
+	}
+
+	if _, err := s.GetWorkspace("ws-parent"); err != nil {
+		t.Fatalf("expected parent workspace to remain: %v", err)
+	}
+	if _, err := s.GetWorkspace("ws-child"); err != nil {
+		t.Fatalf("expected child workspace to remain: %v", err)
 	}
 }
 
