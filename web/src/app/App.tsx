@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useState } from 'react';
+import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 
 import { CostSidebar } from '../components/CostSidebar';
@@ -18,7 +18,9 @@ export function App() {
 
   const sessionMatch = routerState.matches.find((m) => m.routeId === '/sessions/$sessionId');
   const runtimeMatch = routerState.matches.find((m) => m.routeId === '/r/$runtimeId');
-  const runtimeSessionMatch = routerState.matches.find((m) => m.routeId === '/r/$runtimeId/sessions/$sessionId');
+  const runtimeSessionMatch = routerState.matches.find(
+    (m) => m.routeId === '/r/$runtimeId/sessions/$sessionId',
+  );
   const selectedRuntimeID =
     (runtimeSessionMatch?.params as Record<string, string> | undefined)?.runtimeId ??
     (runtimeMatch?.params as Record<string, string> | undefined)?.runtimeId ??
@@ -109,6 +111,7 @@ export function App() {
     listStreamStatus,
     detailStreamStatus,
   );
+  const previousActiveSessionIDRef = useRef(activeSessionID);
 
   const hasSession = selectedSessionID !== '';
   const showDetail = hasSession && !isLoadingDetail && detail != null;
@@ -117,6 +120,25 @@ export function App() {
     if (selectedRuntimeID === '' || selectedSessionID !== '' || activeSessionID === '') {
       return;
     }
+    startTransition(() => {
+      navigateToRuntime(selectedRuntimeID, activeSessionID);
+    });
+  }, [activeSessionID, navigateToRuntime, selectedRuntimeID, selectedSessionID]);
+
+  useEffect(() => {
+    const previousActiveSessionID = previousActiveSessionIDRef.current;
+    previousActiveSessionIDRef.current = activeSessionID;
+
+    if (selectedRuntimeID === '' || selectedSessionID === '' || activeSessionID === '') {
+      return;
+    }
+    if (selectedSessionID === activeSessionID) {
+      return;
+    }
+    if (selectedSessionID !== previousActiveSessionID) {
+      return;
+    }
+
     startTransition(() => {
       navigateToRuntime(selectedRuntimeID, activeSessionID);
     });
@@ -144,6 +166,17 @@ export function App() {
     },
     [navigateToRuntime, selectedRuntimeID],
   );
+
+  const managedSidebarSessions = workspaces.flatMap((entry) =>
+    entry.latest_session != null ? [entry.latest_session] : [],
+  );
+  const sidebarSessions = selectedRuntimeID !== '' ? managedSidebarSessions : sessions;
+  const sidebarLabel = selectedRuntimeID !== '' ? 'Managed Runtime' : 'Sessions';
+  const sidebarTitle = selectedRuntimeID !== '' ? 'Runtime sessions' : 'Recent activity';
+  const emptySidebarBody =
+    selectedRuntimeID !== ''
+      ? 'Branches and workspace resumes for this runtime will appear here.'
+      : 'Start `peek claude` or `peek codex` and the list will appear here.';
 
   return (
     <div className="flex h-full flex-col bg-base p-3 font-sans text-[13px]">
@@ -197,7 +230,8 @@ export function App() {
           {runtimes.map((entry) => {
             const isCurrent = entry.runtime.id === currentRuntimeID;
             const appHref =
-              entry.companion?.browser_path_prefix != null && entry.companion.browser_path_prefix !== ''
+              entry.companion?.browser_path_prefix != null &&
+              entry.companion.browser_path_prefix !== ''
                 ? `/r/${entry.runtime.id}/app/`
                 : '';
             return (
@@ -216,7 +250,9 @@ export function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => navigateToRuntime(entry.runtime.id, entry.runtime.active_session_id)}
+                    onClick={() =>
+                      navigateToRuntime(entry.runtime.id, entry.runtime.active_session_id)
+                    }
                     className="rounded-full border border-surface-0 bg-mantle px-2.5 py-1 text-[10px] font-medium text-subtext-0"
                   >
                     View
@@ -295,9 +331,9 @@ export function App() {
         <aside className="flex flex-col gap-2 overflow-hidden rounded-lg border border-surface-0 bg-base p-3">
           <div>
             <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-overlay-0">
-              Sessions
+              {sidebarLabel}
             </p>
-            <h2 className="text-[13px] font-semibold text-text">Recent activity</h2>
+            <h2 className="text-[13px] font-semibold text-text">{sidebarTitle}</h2>
           </div>
 
           {isLoadingSessions ? (
@@ -306,15 +342,15 @@ export function App() {
           {!isLoadingSessions && sessionsError !== '' ? (
             <EmptyPanel title="Sessions unavailable" body={sessionsError} />
           ) : null}
-          {!isLoadingSessions && sessionsError === '' && sessions.length === 0 ? (
+          {!isLoadingSessions && sessionsError === '' && sidebarSessions.length === 0 ? (
             <EmptyPanel
               title="No sessions yet"
-              body="Start `peek claude` or `peek codex` and the list will appear here."
+              body={emptySidebarBody}
             />
           ) : null}
 
           <div className="flex flex-col gap-1.5 overflow-auto pr-1">
-            {sessions.map((session) => (
+            {sidebarSessions.map((session) => (
               <SessionCard
                 key={session.id}
                 session={session}

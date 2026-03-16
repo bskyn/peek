@@ -141,6 +141,7 @@ func runManaged(source managed.Source, extraArgs []string) error {
 		runtimeSpec,
 		managedLaunchConfig{},
 	)
+	defer managed.ResetTerminalEmulatorModes()
 
 	if err := supervisor.Run(ctx); err != nil {
 		return err

@@ -220,8 +220,3 @@ func mustParseTime(value string) time.Time {
 	}
 	return timestamp
 }
-
-func (s *Store) clearCompanionServiceStates(runtimeID string) error {
-	_, err := s.db.Exec(`DELETE FROM companion_service_states WHERE runtime_id = ?`, runtimeID)
-	return err
-}

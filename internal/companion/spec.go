@@ -244,15 +244,6 @@ func validateRelativePath(value, label string) error {
 	return nil
 }
 
-func (s *ProjectRuntimeSpec) primaryService() *CompanionServiceSpec {
-	for i := range s.Services {
-		if s.Services[i].Role == ServiceRolePrimary {
-			return &s.Services[i]
-		}
-	}
-	return nil
-}
-
 type packageJSON struct {
 	Name         string            `json:"name"`
 	Scripts      map[string]string `json:"scripts"`

@@ -13,11 +13,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/usage"
-	"github.com/google/uuid"
 )
 
 const runtimeRequestPollInterval = 200 * time.Millisecond

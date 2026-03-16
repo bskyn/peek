@@ -187,6 +187,13 @@ func (s *managedSupervisor) runLaunch(ctx context.Context, spec managed.ResumeSp
 
 	for {
 		select {
+		case <-ctx.Done():
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), managedRuntimeStopTimeout)
+			err := run.StopGracefully(stopCtx)
+			stopCancel()
+			_ = s.st.UpdateWorkspaceStatus(spec.WorkspaceID, workspace.StatusFrozen)
+			return spec, spec.WorkspaceID, spec.SessionID, managed.WrapRunExitError(s.source, err), true
+
 		case <-heartbeatTicker.C:
 			_ = s.st.TouchManagedRuntime(s.runtimeID, spec.WorkspaceID, spec.SessionID)
 
