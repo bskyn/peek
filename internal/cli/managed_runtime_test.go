@@ -925,3 +925,23 @@ func normalizeTestPath(path string) string {
 	}
 	return filepath.Clean(path)
 }
+
+func TestClearManagedTerminalWritesANSIReset(t *testing.T) {
+	original := writeManagedTTYControl
+	t.Cleanup(func() {
+		writeManagedTTYControl = original
+	})
+
+	var got []byte
+	writeManagedTTYControl = func(data []byte) error {
+		got = append([]byte(nil), data...)
+		return nil
+	}
+
+	clearManagedTerminal()
+
+	want := "\x1b[?1049l\x1b[?25h\x1b[2J\x1b[3J\x1b[H"
+	if string(got) != want {
+		t.Fatalf("unexpected clear sequence: %q", string(got))
+	}
+}

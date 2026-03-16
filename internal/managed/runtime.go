@@ -7,11 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
-	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/bskyn/peek/internal/workspace"
 )
@@ -46,7 +42,6 @@ type Runtime struct {
 	started bool
 	exited  bool
 	exitErr error
-	tty     *terminalStateRestorer
 
 	// WorkspaceID is set after workspace creation.
 	WorkspaceID string
@@ -75,7 +70,6 @@ func (r *Runtime) Start(_ context.Context) error {
 	r.cmd = exec.Command(bin, args...)
 	r.cmd.Dir = r.req.ProjectDir
 	r.cmd.Env = append(append(os.Environ(), r.req.Env...), "PEEK_MANAGED=1")
-	r.tty = captureTerminalState()
 
 	r.cmd.Stdin = valueOrDefaultReader(r.req.Stdin, os.Stdin)
 	r.cmd.Stdout = valueOrDefaultWriter(r.req.Stdout, os.Stdout)
@@ -89,9 +83,6 @@ func (r *Runtime) Start(_ context.Context) error {
 	// Wait for process exit in background
 	go func() {
 		err := r.cmd.Wait()
-		if r.tty != nil {
-			r.tty.Restore()
-		}
 		r.mu.Lock()
 		r.exited = true
 		r.exitErr = err
@@ -202,18 +193,6 @@ func valueOrDefaultWriter(w io.Writer, fallback *os.File) io.Writer {
 
 var managedTTYPath = "/dev/tty"
 
-var runStty = func(ttyPath string, args ...string) ([]byte, error) {
-	tty, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer tty.Close()
-
-	cmd := exec.Command("stty", args...)
-	cmd.Stdin = tty
-	return cmd.CombinedOutput()
-}
-
 var writeTTYControl = func(ttyPath string, data []byte) error {
 	tty, err := os.OpenFile(ttyPath, os.O_WRONLY, 0)
 	if err != nil {
@@ -224,84 +203,17 @@ var writeTTYControl = func(ttyPath string, data []byte) error {
 	return err
 }
 
-var drainTTYInput = func(ttyPath string) error {
-	fd, err := unix.Open(ttyPath, unix.O_RDONLY|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(fd)
-
-	buffer := make([]byte, 256)
-	for {
-		_, err := unix.Read(fd, buffer)
-		switch {
-		case err == nil:
-			continue
-		case errors.Is(err, unix.EAGAIN), errors.Is(err, unix.EWOULDBLOCK):
-			return nil
-		case errors.Is(err, unix.EINTR):
-			continue
-		default:
-			return err
-		}
-	}
-}
-
-// Reset terminal-emulator modes that a managed CLI may leave enabled when it
-// exits on SIGINT, especially kitty keyboard protocol and xterm
-// modifyOtherKeys. Unsupported sequences are ignored by terminals.
-const terminalResetSequence = "\x1b[?2004l" +
-	"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l" +
-	"\x1b[?1l\x1b[>" +
-	"\x1b[>4;m" +
-	"\x1b[=0;1u" +
-	"\x1b[?1049l" +
-	"\x1b[>4;m" +
-	"\x1b[=0;1u"
-
-const (
-	// Hold the process briefly on final shutdown so late kitty/xterm key-release
-	// events land while Peek is still draining the tty instead of leaking into
-	// the shell prompt as literal CSI-u text like `9;5:3u`.
-	terminalResetPasses   = 12
-	terminalResetInterval = 20 * time.Millisecond
-)
-
-type terminalStateRestorer struct {
-	ttyPath string
-	encoded string
-}
-
-func captureTerminalState() *terminalStateRestorer {
-	output, err := runStty(managedTTYPath, "-g")
-	if err != nil {
-		return nil
-	}
-	encoded := strings.TrimSpace(string(output))
-	if encoded == "" {
-		return nil
-	}
-	return &terminalStateRestorer{
-		ttyPath: managedTTYPath,
-		encoded: encoded,
-	}
-}
-
-func (r *terminalStateRestorer) Restore() {
-	if r == nil || r.encoded == "" {
-		return
-	}
-	_, _ = runStty(r.ttyPath, r.encoded)
-}
-
-// ResetTerminalEmulatorModes performs a best-effort cleanup for terminal
-// emulator features that can survive a SIGINT-triggered CLI exit.
+// Reset terminal-emulator modes that may survive a SIGINT-triggered CLI exit.
+// This runs only when Peek is returning control to the shell, not on
+// branch/switch handoffs.
 func ResetTerminalEmulatorModes() {
-	for i := 0; i < terminalResetPasses; i++ {
-		_ = writeTTYControl(managedTTYPath, []byte(terminalResetSequence))
-		_ = drainTTYInput(managedTTYPath)
-		if i+1 < terminalResetPasses {
-			time.Sleep(terminalResetInterval)
-		}
-	}
+	const sequence = "\x1b[?2004l" +
+		"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l" +
+		"\x1b[?1l\x1b[>" +
+		"\x1b[>4;m" +
+		"\x1b[=0;1u" +
+		"\x1b[?1049l" +
+		"\x1b[>4;m" +
+		"\x1b[=0;1u"
+	_ = writeTTYControl(managedTTYPath, []byte(sequence))
 }

@@ -57,6 +57,17 @@ type managedSupervisor struct {
 	activeSessionID   string
 	companionMgr      *companion.Manager
 	launch            managedLaunchConfig
+	hasLaunched       bool
+}
+
+var writeManagedTTYControl = func(data []byte) error {
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer tty.Close()
+	_, err = tty.Write(data)
+	return err
 }
 
 func newManagedSupervisor(st *store.Store, rt *viewer.Runtime, orch *managed.Orchestrator, source managed.Source, baseArgs []string, runtimeID, rootWorkspaceID, activeWorkspaceID, activeSessionID, projectDir string, companionSpec *companion.ProjectRuntimeSpec, launch managedLaunchConfig) *managedSupervisor {
@@ -151,6 +162,11 @@ func (s *managedSupervisor) runLaunch(ctx context.Context, spec managed.ResumeSp
 		s.viewer.SetCurrentRuntimeID(s.runtimeID)
 		s.viewer.SetActiveSessionID(s.runtimeID, spec.SessionID)
 	}
+	if s.hasLaunched {
+		clearManagedTerminal()
+		fmt.Fprintf(os.Stdout, "Peek: switched to workspace %s (%s)\n\n", spec.WorkspaceID, spec.SessionID)
+	}
+	s.hasLaunched = true
 
 	launchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -402,4 +418,9 @@ func managedWorktreeBase() string {
 		return filepath.Join(os.TempDir(), "peek-worktrees")
 	}
 	return filepath.Join(filepath.Dir(dbPath), "worktrees")
+}
+
+func clearManagedTerminal() {
+	const sequence = "\x1b[?1049l\x1b[?25h\x1b[2J\x1b[3J\x1b[H"
+	_ = writeManagedTTYControl([]byte(sequence))
 }

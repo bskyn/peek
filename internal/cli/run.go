@@ -98,8 +98,18 @@ func runManaged(source managed.Source, extraArgs []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		cancel()
+		seenInterrupt := false
+		for sig := range sigCh {
+			switch sig {
+			case syscall.SIGINT:
+				if !seenInterrupt {
+					seenInterrupt = true
+					continue
+				}
+			}
+			cancel()
+			return
+		}
 	}()
 
 	orch := managed.NewOrchestrator(st, absProjectDir, managedWorktreeBase())
@@ -142,7 +152,6 @@ func runManaged(source managed.Source, extraArgs []string) error {
 		managedLaunchConfig{},
 	)
 	defer managed.ResetTerminalEmulatorModes()
-
 	if err := supervisor.Run(ctx); err != nil {
 		return err
 	}
