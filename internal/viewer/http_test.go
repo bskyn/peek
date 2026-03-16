@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +150,29 @@ func TestHandleAppProxyRepointsStableURL(t *testing.T) {
 	}
 	if body := secondRec.Body.String(); body != "child workspace" {
 		t.Fatalf("unexpected second proxy body: %q", body)
+	}
+}
+
+func TestNewHandlerServesRuntimeSessionRouteFromSPA(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/viewer-spa.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	handler, err := NewHandler(st, &Runtime{broker: NewBroker(), targets: make(map[string]*url.URL)})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/r/rt-root/sessions/s-root", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("expected html response, got %q", got)
 	}
 }
 

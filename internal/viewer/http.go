@@ -47,7 +47,7 @@ func NewHandler(st *store.Store, rt *Runtime) (http.Handler, error) {
 	mux.Handle("GET /api/stream", NewStreamHandler(rt.Broker()))
 	mux.HandleFunc("POST /api/runtimes/{id}/workspaces/{workspace_id}/switch", handleSwitchRuntimeWorkspace(st))
 	mux.Handle("/app/", handleAppProxy(st, rt, ""))
-	mux.Handle("/r/", handleRuntimeAppProxy(st, rt))
+	mux.Handle("/r/", handleRuntimeRoute(st, rt, staticHandler))
 	mux.Handle("/", staticHandler)
 	return mux, nil
 }
@@ -102,14 +102,33 @@ func handleAppProxy(st *store.Store, rt *Runtime, runtimeID string) http.Handler
 
 func handleRuntimeAppProxy(st *store.Store, rt *Runtime) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pathValue := strings.TrimPrefix(r.URL.Path, "/r/")
-		parts := strings.SplitN(pathValue, "/", 3)
-		if len(parts) < 2 || parts[0] == "" || parts[1] != "app" {
+		runtimeID, ok := runtimeAppRequest(r.URL.Path)
+		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		handleAppProxy(st, rt, parts[0]).ServeHTTP(w, r)
+		handleAppProxy(st, rt, runtimeID).ServeHTTP(w, r)
 	})
+}
+
+func handleRuntimeRoute(st *store.Store, rt *Runtime, staticHandler http.Handler) http.Handler {
+	appProxy := handleRuntimeAppProxy(st, rt)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := runtimeAppRequest(r.URL.Path); ok {
+			appProxy.ServeHTTP(w, r)
+			return
+		}
+		staticHandler.ServeHTTP(w, r)
+	})
+}
+
+func runtimeAppRequest(requestPath string) (string, bool) {
+	pathValue := strings.TrimPrefix(requestPath, "/r/")
+	parts := strings.SplitN(pathValue, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] != "app" {
+		return "", false
+	}
+	return parts[0], true
 }
 
 func handleListSessions(st *store.Store) http.HandlerFunc {

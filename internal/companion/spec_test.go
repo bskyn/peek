@@ -33,6 +33,13 @@ func TestResolveProjectRuntimeAutodetectsFrontend(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectDir, "pnpm-lock.yaml"), []byte("lockfileVersion: 9"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte(`{
+  "name": "fixture-root",
+  "private": true,
+  "workspaces": ["apps/*"]
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(projectDir, "apps", "web"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -65,5 +72,36 @@ func TestResolveProjectRuntimeAutodetectsFrontend(t *testing.T) {
 	}
 	if len(spec.EnvSources) != 1 || spec.EnvSources[0].Path != filepath.Join("apps", "web", ".env.local") {
 		t.Fatalf("unexpected env sources: %+v", spec.EnvSources)
+	}
+}
+
+func TestResolveProjectRuntimeSkipsNestedPackageWithoutWorkspaceDeclaration(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "pnpm-lock.yaml"), []byte("lockfileVersion: 9"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte(`{
+  "name": "fixture-root",
+  "private": true
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "web", "package.json"), []byte(`{
+  "name": "fixture-web",
+  "scripts": {"dev": "vite"},
+  "dependencies": {"react": "^19.0.0", "vite": "^6.0.0"}
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := ResolveProjectRuntime(projectDir)
+	if err != nil {
+		t.Fatalf("resolve runtime: %v", err)
+	}
+	if spec != nil {
+		t.Fatalf("expected nested package without workspaces to be ignored, got %+v", spec)
 	}
 }

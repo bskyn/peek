@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -256,6 +257,7 @@ type packageJSON struct {
 	Name         string            `json:"name"`
 	Scripts      map[string]string `json:"scripts"`
 	Dependencies map[string]string `json:"dependencies"`
+	Workspaces   json.RawMessage   `json:"workspaces"`
 }
 
 type autodetectCandidate struct {
@@ -273,8 +275,13 @@ func autodetectProjectRuntime(projectDir string) (*ProjectRuntimeSpec, error) {
 		return nil, nil
 	}
 
+	workspaceGlobs, err := loadWorkspaceGlobs(projectDir)
+	if err != nil {
+		return nil, err
+	}
+
 	var candidates []autodetectCandidate
-	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -307,6 +314,9 @@ func autodetectProjectRuntime(projectDir string) (*ProjectRuntimeSpec, error) {
 		}
 		if relDir == "." {
 			relDir = ""
+		}
+		if relDir != "" && !workspaceMatches(relDir, workspaceGlobs) {
+			return nil
 		}
 
 		score := 0
@@ -390,6 +400,66 @@ func autodetectProjectRuntime(projectDir string) (*ProjectRuntimeSpec, error) {
 			PathPrefix: "/app/",
 		},
 	}, nil
+}
+
+func loadWorkspaceGlobs(projectDir string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(projectDir, "package.json"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read root package.json: %w", err)
+	}
+
+	var pkg packageJSON
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil, fmt.Errorf("parse root package.json: %w", err)
+	}
+	return extractWorkspaceGlobs(pkg.Workspaces), nil
+}
+
+func extractWorkspaceGlobs(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var direct []string
+	if err := json.Unmarshal(raw, &direct); err == nil {
+		return compactPaths(direct)
+	}
+
+	var nested struct {
+		Packages []string `json:"packages"`
+	}
+	if err := json.Unmarshal(raw, &nested); err == nil {
+		return compactPaths(nested.Packages)
+	}
+
+	return nil
+}
+
+func workspaceMatches(relDir string, globs []string) bool {
+	if relDir == "" || len(globs) == 0 {
+		return false
+	}
+	normalizedRelDir := filepath.ToSlash(relDir)
+	for _, rawGlob := range globs {
+		glob := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(rawGlob)), "./")
+		if glob == "" || glob == "." {
+			continue
+		}
+		if strings.HasSuffix(glob, "/**") {
+			prefix := strings.TrimSuffix(glob, "/**")
+			if normalizedRelDir == prefix || strings.HasPrefix(normalizedRelDir, prefix+"/") {
+				return true
+			}
+		}
+		matched, err := path.Match(glob, normalizedRelDir)
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 func buildDevCommand(manager, relDir string) []string {

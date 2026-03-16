@@ -59,6 +59,8 @@ Managed mode creates a workspace, tracks checkpoints around tool execution, and 
 
 Peek can also keep one browser-facing companion runtime aligned with the active managed workspace. Companion services are now owned by the managed runtime instead of the `peek run` process, so they can survive agent exit and be reattached by a later managed session for the same runtime.
 
+If no companion runtime resolves, managed mode still opens the Peek viewer and workspace controls. You only lose the proxied `/r/<runtime-id>/app/` app surface.
+
 - The model is single-active-workspace per lineage. Peek stops the previous workspace’s companion services before starting the next workspace’s services.
 - The first managed runtime for a checkout reuses the current repo root. A second live runtime against the same checkout gets its own isolated root worktree automatically.
 - Peek allocates internal companion ports per runtime and serves the app through runtime-scoped URLs such as `/r/<runtime-id>/app/` instead of exposing raw ports.
@@ -74,7 +76,8 @@ Peek resolves companion runtimes in this order:
 Autodetection assumptions are intentionally narrow:
 
 - `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock` determines the package manager
-- the primary app is the best `package.json` candidate with a `dev` script, preferring `apps/web`, `frontend`, and `web`
+- single-package repos can autodetect from the root `package.json`; nested app candidates are only considered when the root `package.json` declares workspaces
+- the primary app is the best workspace `package.json` candidate with a `dev` script, preferring `apps/web`, `frontend`, and `web`
 - bootstrap is `pnpm install`, `npm ci`, or `yarn install`
 - browser readiness defaults to `http://127.0.0.1:5173/`, or `http://127.0.0.1:3000/` for Next.js
 
