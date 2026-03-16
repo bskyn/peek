@@ -1,15 +1,17 @@
 package managed
 
 import (
+	"database/sql"
 	"fmt"
 	"os/exec"
 	"strings"
 
+	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/workspace"
 )
 
-// DeleteWorkspace removes an inactive leaf workspace and cleans up its
-// materialized worktree plus Peek-managed git refs.
+// DeleteWorkspace removes an inactive leaf workspace. Root workspaces are
+// deleted via the lineage-prune path so runtime metadata is cleaned up too.
 func (o *Orchestrator) DeleteWorkspace(workspaceID string) error {
 	ws, err := o.st.GetWorkspace(workspaceID)
 	if err != nil {
@@ -17,7 +19,8 @@ func (o *Orchestrator) DeleteWorkspace(workspaceID string) error {
 	}
 
 	if ws.IsRoot {
-		return fmt.Errorf("cannot delete root workspace %q", workspaceID)
+		_, err := o.PruneWorkspaceLineage(workspaceID)
+		return err
 	}
 	if ws.Status == workspace.StatusActive {
 		return fmt.Errorf("cannot delete active workspace %q — switch or freeze it first", workspaceID)
@@ -103,4 +106,99 @@ func deleteGitRef(repoDir, ref string) error {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// PruneWorkspaceLineageResult describes one pruned root lineage.
+type PruneWorkspaceLineageResult struct {
+	RootWorkspaceID string
+	WorkspaceIDs    []string
+	RuntimeIDs      []string
+}
+
+// PruneWorkspaceLineage removes a stopped root workspace lineage and its
+// associated managed-runtime metadata.
+func (o *Orchestrator) PruneWorkspaceLineage(rootWorkspaceID string) (*PruneWorkspaceLineageResult, error) {
+	root, err := o.st.GetWorkspace(rootWorkspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("get root workspace: %w", err)
+	}
+	if !root.IsRoot {
+		return nil, fmt.Errorf("workspace %q is not a root workspace", rootWorkspaceID)
+	}
+
+	if lease, err := o.st.GetCheckoutLease(root.ProjectPath); err == nil {
+		if lease.WorkspaceID == rootWorkspaceID {
+			return nil, fmt.Errorf("cannot prune root workspace %q while it owns the current checkout lease", rootWorkspaceID)
+		}
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("load checkout lease: %w", err)
+	}
+
+	runtime, err := o.st.GetManagedRuntimeByRootWorkspace(rootWorkspaceID)
+	if err == nil {
+		if runtime.Status != store.ManagedRuntimeStopped {
+			return nil, fmt.Errorf("cannot prune root workspace %q while managed runtime %q is %s", rootWorkspaceID, runtime.ID, runtime.Status)
+		}
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("load root runtime: %w", err)
+	}
+
+	lineage, err := o.st.ListLineageWorkspaces(rootWorkspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list lineage workspaces: %w", err)
+	}
+
+	refs := make([]string, 0)
+	seenRefs := make(map[string]struct{})
+	addRef := func(ref string) {
+		if !strings.HasPrefix(ref, "refs/peek/") {
+			return
+		}
+		if _, ok := seenRefs[ref]; ok {
+			return
+		}
+		seenRefs[ref] = struct{}{}
+		refs = append(refs, ref)
+	}
+
+	for _, ws := range lineage {
+		addRef(ws.GitRef)
+		checkpoints, err := o.st.ListCheckpoints(ws.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list checkpoints for %s: %w", ws.ID, err)
+		}
+		for _, cp := range checkpoints {
+			addRef(cp.GitRef)
+		}
+	}
+
+	for i := len(lineage) - 1; i >= 0; i-- {
+		ws := lineage[i]
+		if ws.WorktreePath == "" || !pathExists(ws.WorktreePath) || ws.IsPrimaryCheckout() {
+			continue
+		}
+		if err := RemoveWorktree(ws.WorktreePath, o.repoDir); err != nil {
+			return nil, fmt.Errorf("remove worktree for %s: %w", ws.ID, err)
+		}
+	}
+
+	deleted, workspaceIDs, runtimeIDs, err := o.st.PruneWorkspaceLineage(rootWorkspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("delete workspace lineage metadata: %w", err)
+	}
+	if !deleted {
+		return nil, fmt.Errorf("workspace lineage %q not found", rootWorkspaceID)
+	}
+
+	for _, ref := range refs {
+		if err := deleteGitRef(o.repoDir, ref); err != nil {
+			return nil, fmt.Errorf("workspace lineage metadata deleted, but cleanup of git ref %q failed: %w", ref, err)
+		}
+	}
+
+	return &PruneWorkspaceLineageResult{
+		RootWorkspaceID: rootWorkspaceID,
+		WorkspaceIDs:    workspaceIDs,
+		RuntimeIDs:      runtimeIDs,
+	}, nil
 }

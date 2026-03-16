@@ -858,6 +858,241 @@ func TestDeleteWorkspaceRehomesStoppedManagedRuntimeReference(t *testing.T) {
 	}
 }
 
+func TestPruneWorkspaceLineageRemovesStoppedRootAndMetadata(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	for _, sess := range []event.Session{
+		testSession("s-root", now),
+		testSession("s-child", now),
+	} {
+		if err := s.CreateSession(sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	branchSeq := int64(2)
+	for _, ws := range []workspace.Workspace{
+		{
+			ID:           "ws-root",
+			Status:       workspace.StatusFrozen,
+			ProjectPath:  "/test",
+			WorktreePath: "/test",
+			IsRoot:       true,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		},
+		{
+			ID:                "ws-child",
+			ParentWorkspaceID: "ws-root",
+			Status:            workspace.StatusFrozen,
+			ProjectPath:       "/test",
+			WorktreePath:      "/tmp/ws-child",
+			BranchFromSeq:     &branchSeq,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		},
+	} {
+		if err := s.CreateWorkspace(ws); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, link := range []workspace.WorkspaceSession{
+		{WorkspaceID: "ws-root", SessionID: "s-root", CreatedAt: now},
+		{WorkspaceID: "ws-child", SessionID: "s-child", CreatedAt: now},
+	} {
+		if err := s.LinkWorkspaceSession(link); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, seg := range []workspace.BranchPathSegment{
+		{WorkspaceID: "ws-root", Depth: 0, Ordinal: 0},
+		{WorkspaceID: "ws-child", ParentWorkspaceID: "ws-root", BranchSeq: branchSeq, Depth: 1, Ordinal: 0},
+	} {
+		if err := s.SaveBranchPath(seg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.CreateCheckpoint(workspace.CheckpointRef{
+		ID:          "cp-1",
+		WorkspaceID: "ws-child",
+		SessionID:   "s-child",
+		Seq:         2,
+		Kind:        workspace.SnapshotPreTool,
+		GitRef:      "refs/peek/ws-child/2/pre_tool",
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.UpsertManagedRuntime(ManagedRuntime{
+		ID:                "rt-1",
+		ProjectPath:       "/test",
+		RootWorkspaceID:   "ws-root",
+		ActiveWorkspaceID: "ws-root",
+		ActiveSessionID:   "s-root",
+		Source:            "claude",
+		Status:            ManagedRuntimeStopped,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertCheckoutLease(CheckoutLease{
+		CheckoutPath: "/test",
+		RuntimeID:    "rt-1",
+		WorkspaceID:  "ws-root",
+		ClaimedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateManagedRuntimeRequest(ManagedRuntimeRequest{
+		ID:        "req-1",
+		RuntimeID: "rt-1",
+		Kind:      "branch",
+		Status:    ManagedRuntimeRequestPending,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertDetachedCompanionRuntime(DetachedCompanionRuntime{
+		RuntimeID:         "rt-1",
+		ActiveWorkspaceID: "ws-root",
+		OwnerSessionID:    "s-root",
+		ConfigSource:      "peek.runtime.json",
+		Phase:             "idle",
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplaceCompanionServiceStates("rt-1", []CompanionServiceState{{
+		RuntimeID:   "rt-1",
+		WorkspaceID: "ws-root",
+		ServiceName: "web",
+		Status:      CompanionServiceStopped,
+		UpdatedAt:   now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertPortLease(PortLease{
+		RuntimeID:   "rt-1",
+		ServiceName: "web",
+		Host:        "127.0.0.1",
+		Port:        4318,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []WorkspaceBootstrapState{
+		{WorkspaceID: "ws-root", Status: BootstrapSucceeded, UpdatedAt: now},
+		{WorkspaceID: "ws-child", Status: BootstrapSucceeded, UpdatedAt: now},
+	} {
+		if err := s.UpsertWorkspaceBootstrapState(state); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, workspaceIDs, runtimeIDs, err := s.PruneWorkspaceLineage("ws-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Fatal("expected workspace lineage to be deleted")
+	}
+	if len(workspaceIDs) != 2 {
+		t.Fatalf("expected 2 deleted workspaces, got %d", len(workspaceIDs))
+	}
+	if len(runtimeIDs) != 1 || runtimeIDs[0] != "rt-1" {
+		t.Fatalf("unexpected runtime ids: %v", runtimeIDs)
+	}
+
+	for _, workspaceID := range []string{"ws-root", "ws-child"} {
+		if _, err := s.GetWorkspace(workspaceID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("expected workspace %s to be deleted, got %v", workspaceID, err)
+		}
+	}
+	if _, err := s.GetManagedRuntime("rt-1"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected runtime to be deleted, got %v", err)
+	}
+	if _, err := s.GetCheckoutLease("/test"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected checkout lease to be deleted, got %v", err)
+	}
+	if _, err := s.GetCheckpoint("cp-1"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected checkpoint to be deleted, got %v", err)
+	}
+	if _, err := s.GetWorkspaceBootstrapState("ws-root"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected root bootstrap state to be deleted, got %v", err)
+	}
+	if _, err := s.GetWorkspaceBootstrapState("ws-child"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected child bootstrap state to be deleted, got %v", err)
+	}
+	if _, err := s.GetSession("s-root"); err != nil {
+		t.Fatalf("expected root session to remain, got %v", err)
+	}
+}
+
+func TestPruneWorkspaceLineageRejectsLiveRuntime(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := s.CreateSession(testSession("s-root", now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateWorkspace(workspace.Workspace{
+		ID:           "ws-root",
+		Status:       workspace.StatusFrozen,
+		ProjectPath:  "/test",
+		WorktreePath: "/test",
+		IsRoot:       true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-root",
+		SessionID:   "s-root",
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveBranchPath(workspace.BranchPathSegment{WorkspaceID: "ws-root", Depth: 0, Ordinal: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertManagedRuntime(ManagedRuntime{
+		ID:                "rt-1",
+		ProjectPath:       "/test",
+		RootWorkspaceID:   "ws-root",
+		ActiveWorkspaceID: "ws-root",
+		ActiveSessionID:   "s-root",
+		Source:            "claude",
+		Status:            ManagedRuntimeRunning,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, _, _, err := s.PruneWorkspaceLineage("ws-root")
+	if err == nil {
+		t.Fatal("expected prune to fail for live runtime")
+	}
+	if deleted {
+		t.Fatal("expected prune result to be false")
+	}
+	if _, err := s.GetWorkspace("ws-root"); err != nil {
+		t.Fatalf("expected workspace to remain, got %v", err)
+	}
+}
+
 func TestMigrationRepairsLegacyManagedRuntimeProjectPath(t *testing.T) {
 	dbPath := t.TempDir() + "/legacy.db"
 

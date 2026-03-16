@@ -148,8 +148,11 @@ peek workspace merge ws-def456
 # Dematerialize a frozen workspace to ref-only storage
 peek workspace cool ws-abc123
 
-# Delete an inactive leaf branch workspace
+# Delete an inactive branch workspace, or prune a stopped root lineage
 peek workspace delete ws-abc123
+
+# Sweep stopped stale root lineages for the current repo
+peek workspace prune
 
 # Show workspace details, lineage, and children
 peek workspace status ws-abc123
@@ -178,8 +181,9 @@ The viewer is runtime-aware in managed mode:
 - **Branch from a later card**: resolves to the latest completed post-tool snapshot at or before the selected sequence.
 - **Freeze/switch**: the source workspace freezes on branch. `peek workspace switch` freezes the currently active sibling and hands the live managed terminal back to the target workspace in place.
 - **Merge**: merges the branch's current worktree state into the parent workspace. On conflict, Peek stops and reports the target worktree path for manual resolution.
+- **Delete/prune**: `peek workspace delete <id>` deletes ordinary inactive branch workspaces. If `<id>` is a root workspace, Peek prunes the entire stopped lineage instead, but refuses the root that still owns the current checkout lease. `peek workspace prune` does the same sweep automatically for all stopped stale roots in the current repo.
 - **Cool**: dematerializes inactive worktrees down to hidden git refs. Switch re-materializes on demand.
-- **Delete**: removes an inactive leaf branch workspace, including its linked git worktree. Root workspaces, active workspaces, and parents with children are rejected.
+- **Delete**: removes an inactive branch workspace, including its linked git worktree. For root workspaces, delete delegates to the stopped-lineage prune flow. Active workspaces and parents with children are still rejected.
 
 ### Monitoring existing sessions
 

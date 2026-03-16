@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bskyn/peek/internal/event"
@@ -264,6 +265,32 @@ func (s *Store) ListChildWorkspaces(parentID string) ([]WorkspaceSummary, error)
 	return children, rows.Err()
 }
 
+// ListRootWorkspacesByProjectPath returns root workspaces for a project ordered by recency.
+func (s *Store) ListRootWorkspacesByProjectPath(projectPath string) ([]workspace.Workspace, error) {
+	rows, err := s.db.Query(
+		`SELECT id, COALESCE(parent_workspace_id, ''), status, project_path, worktree_path,
+		        git_ref, branch_from_seq, sibling_ordinal, is_root, created_at, updated_at
+		   FROM workspaces
+		  WHERE project_path = ? AND is_root = 1
+		  ORDER BY updated_at DESC, created_at DESC`,
+		projectPath,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]workspace.Workspace, 0)
+	for rows.Next() {
+		ws, err := scanWorkspace(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *ws)
+	}
+	return result, rows.Err()
+}
+
 // GetWorkspaceSummary loads one workspace summary.
 func (s *Store) GetWorkspaceSummary(id string) (WorkspaceSummary, error) {
 	row := s.db.QueryRow(workspaceSummarySelect+`
@@ -506,6 +533,104 @@ func (s *Store) DeleteWorkspace(id string) (bool, error) {
 	return affected > 0, nil
 }
 
+// PruneWorkspaceLineage removes a stopped root lineage and all runtime metadata
+// that points at it. Session rows are intentionally retained.
+func (s *Store) PruneWorkspaceLineage(rootWorkspaceID string) (bool, []string, []string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, nil, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	root, err := workspaceByIDTx(tx, rootWorkspaceID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil, nil, nil
+		}
+		return false, nil, nil, err
+	}
+	if !root.IsRoot {
+		return false, nil, nil, fmt.Errorf("workspace %q is not a root workspace", rootWorkspaceID)
+	}
+
+	lineage, err := lineageWorkspacesTx(tx, rootWorkspaceID)
+	if err != nil {
+		return false, nil, nil, err
+	}
+	if len(lineage) == 0 {
+		return false, nil, nil, nil
+	}
+
+	workspaceIDs := make([]string, 0, len(lineage))
+	for _, ws := range lineage {
+		if ws.Status == workspace.StatusActive {
+			return false, nil, nil, fmt.Errorf("workspace %q is still active", ws.ID)
+		}
+		workspaceIDs = append(workspaceIDs, ws.ID)
+	}
+
+	runtimes, err := runtimeRefsForLineageTx(tx, rootWorkspaceID, workspaceIDs)
+	if err != nil {
+		return false, nil, nil, err
+	}
+
+	runtimeIDs := make([]string, 0, len(runtimes))
+	for _, rt := range runtimes {
+		if rt.rootWorkspaceID != rootWorkspaceID {
+			return false, nil, nil, fmt.Errorf("workspace lineage %q is referenced by runtime %q rooted at %q", rootWorkspaceID, rt.id, rt.rootWorkspaceID)
+		}
+		if rt.status != ManagedRuntimeStopped {
+			return false, nil, nil, fmt.Errorf("workspace lineage %q is still referenced by managed runtime %q", rootWorkspaceID, rt.id)
+		}
+		runtimeIDs = append(runtimeIDs, rt.id)
+	}
+
+	if len(runtimeIDs) > 0 {
+		if err := deleteWhereInTx(tx, "DELETE FROM checkout_leases WHERE runtime_id IN (%s)", runtimeIDs); err != nil {
+			return false, nil, nil, err
+		}
+		if err := deleteWhereInTx(tx, "DELETE FROM managed_runtime_requests WHERE runtime_id IN (%s)", runtimeIDs); err != nil {
+			return false, nil, nil, err
+		}
+		if err := deleteWhereInTx(tx, "DELETE FROM detached_companion_runtimes WHERE runtime_id IN (%s)", runtimeIDs); err != nil {
+			return false, nil, nil, err
+		}
+		if err := deleteWhereInTx(tx, "DELETE FROM companion_service_states WHERE runtime_id IN (%s)", runtimeIDs); err != nil {
+			return false, nil, nil, err
+		}
+		if err := deleteWhereInTx(tx, "DELETE FROM port_leases WHERE runtime_id IN (%s)", runtimeIDs); err != nil {
+			return false, nil, nil, err
+		}
+		if err := deleteWhereInTx(tx, "DELETE FROM managed_runtimes WHERE id IN (%s)", runtimeIDs); err != nil {
+			return false, nil, nil, err
+		}
+	}
+
+	if err := deleteWhereInTx(tx, "DELETE FROM checkout_leases WHERE workspace_id IN (%s)", workspaceIDs); err != nil {
+		return false, nil, nil, err
+	}
+	if err := deleteWhereInTx(tx, "DELETE FROM workspace_bootstrap_states WHERE workspace_id IN (%s)", workspaceIDs); err != nil {
+		return false, nil, nil, err
+	}
+	if err := deleteWhereInTx(tx, "DELETE FROM checkpoints WHERE workspace_id IN (%s)", workspaceIDs); err != nil {
+		return false, nil, nil, err
+	}
+	if err := deleteWhereInTx(tx, "DELETE FROM workspace_sessions WHERE workspace_id IN (%s)", workspaceIDs); err != nil {
+		return false, nil, nil, err
+	}
+	if err := deleteWhereInTx(tx, "DELETE FROM branch_path_segments WHERE workspace_id IN (%s)", workspaceIDs); err != nil {
+		return false, nil, nil, err
+	}
+	if err := deleteWhereInTx(tx, "DELETE FROM workspaces WHERE id IN (%s)", workspaceIDs); err != nil {
+		return false, nil, nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, nil, nil, err
+	}
+	return true, workspaceIDs, runtimeIDs, nil
+}
+
 // -- helpers --
 
 const workspaceSummarySelect = `
@@ -599,4 +724,102 @@ func checkpointID(workspaceID string, seq int64, kind workspace.SnapshotKind) st
 // CheckpointID generates a deterministic checkpoint ID.
 func CheckpointID(workspaceID string, seq int64, kind workspace.SnapshotKind) string {
 	return checkpointID(workspaceID, seq, kind)
+}
+
+type runtimeRef struct {
+	id              string
+	rootWorkspaceID string
+	status          ManagedRuntimeStatus
+}
+
+func runtimeRefsForLineageTx(tx *sql.Tx, rootWorkspaceID string, workspaceIDs []string) ([]runtimeRef, error) {
+	query := `
+SELECT id, root_workspace_id, status
+  FROM managed_runtimes
+ WHERE root_workspace_id = ?`
+	args := []any{rootWorkspaceID}
+	if len(workspaceIDs) > 0 {
+		query += " OR active_workspace_id IN (" + placeholders(len(workspaceIDs)) + ")"
+		for _, workspaceID := range workspaceIDs {
+			args = append(args, workspaceID)
+		}
+	}
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]runtimeRef, 0)
+	for rows.Next() {
+		var ref runtimeRef
+		if err := rows.Scan(&ref.id, &ref.rootWorkspaceID, &ref.status); err != nil {
+			return nil, err
+		}
+		result = append(result, ref)
+	}
+	return result, rows.Err()
+}
+
+func workspaceByIDTx(tx *sql.Tx, id string) (*workspace.Workspace, error) {
+	row := tx.QueryRow(
+		`SELECT id, COALESCE(parent_workspace_id, ''), status, project_path, worktree_path,
+		        git_ref, branch_from_seq, sibling_ordinal, is_root, created_at, updated_at
+		   FROM workspaces
+		  WHERE id = ?`,
+		id,
+	)
+	return scanWorkspace(row)
+}
+
+func lineageWorkspacesTx(tx *sql.Tx, rootWorkspaceID string) ([]workspace.Workspace, error) {
+	rows, err := tx.Query(
+		`WITH RECURSIVE lineage(id) AS (
+			SELECT id FROM workspaces WHERE id = ?
+			UNION ALL
+			SELECT w.id
+			  FROM workspaces w
+			  JOIN lineage l ON w.parent_workspace_id = l.id
+		)
+		SELECT id, COALESCE(parent_workspace_id, ''), status, project_path, worktree_path,
+		       git_ref, branch_from_seq, sibling_ordinal, is_root, created_at, updated_at
+		  FROM workspaces
+		 WHERE id IN (SELECT id FROM lineage)
+		 ORDER BY created_at ASC, id ASC`,
+		rootWorkspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]workspace.Workspace, 0)
+	for rows.Next() {
+		ws, err := scanWorkspace(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *ws)
+	}
+	return result, rows.Err()
+}
+
+func deleteWhereInTx(tx *sql.Tx, queryFmt string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	query := fmt.Sprintf(queryFmt, placeholders(len(ids)))
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	_, err := tx.Exec(query, args...)
+	return err
+}
+
+func placeholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return strings.TrimRight(strings.Repeat("?,", count), ",")
 }

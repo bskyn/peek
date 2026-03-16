@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -26,6 +28,7 @@ func newWorkspaceCmd() *cobra.Command {
 	cmd.AddCommand(newWorkspaceFreezeCmd())
 	cmd.AddCommand(newWorkspaceCoolCmd())
 	cmd.AddCommand(newWorkspaceDeleteCmd())
+	cmd.AddCommand(newWorkspacePruneCmd())
 	cmd.AddCommand(newWorkspaceStatusCmd())
 
 	return cmd
@@ -228,7 +231,7 @@ func newWorkspaceCoolCmd() *cobra.Command {
 func newWorkspaceDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <workspace-id>",
-		Short: "Delete an inactive branch workspace",
+		Short: "Delete an inactive branch workspace or prune a stopped root lineage",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if err := runWorkspaceDelete(args[0]); err != nil {
@@ -251,9 +254,110 @@ func runWorkspaceDelete(workspaceID string) error {
 	if err != nil {
 		return err
 	}
+	projectDir, err = filepath.Abs(projectDir)
+	if err != nil {
+		return err
+	}
 
 	orch := managed.NewOrchestrator(st, projectDir, managedWorktreeBase())
 	return orch.DeleteWorkspace(workspaceID)
+}
+
+func newWorkspacePruneCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "prune",
+		Short: "Prune stopped root workspace lineages for the current repo",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			result, err := runWorkspacePrune()
+			if err != nil {
+				return err
+			}
+			if len(result.PrunedRoots) == 0 {
+				fmt.Println("No pruneable root workspaces found.")
+				return nil
+			}
+
+			fmt.Printf("Pruned %d root workspace lineage(s):\n", len(result.PrunedRoots))
+			for _, rootID := range result.PrunedRoots {
+				fmt.Printf("  %s\n", rootID)
+			}
+			if len(result.SkippedRoots) > 0 {
+				fmt.Printf("Skipped %d root workspace lineage(s) that are still in use:\n", len(result.SkippedRoots))
+				for _, rootID := range result.SkippedRoots {
+					fmt.Printf("  %s\n", rootID)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+type workspacePruneResult struct {
+	PrunedRoots  []string
+	SkippedRoots []string
+}
+
+func runWorkspacePrune() (*workspacePruneResult, error) {
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer st.Close()
+
+	projectDir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	projectDir, err = filepath.Abs(projectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	roots, err := st.ListRootWorkspacesByProjectPath(projectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	skipped := make([]string, 0)
+	if lease, err := st.GetCheckoutLease(projectDir); err == nil {
+		skipped = append(skipped, lease.WorkspaceID)
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("load checkout lease: %w", err)
+	}
+
+	orch := managed.NewOrchestrator(st, projectDir, managedWorktreeBase())
+	pruned := make([]string, 0)
+	for _, root := range roots {
+		if containsString(skipped, root.ID) {
+			continue
+		}
+
+		runtime, err := st.GetManagedRuntimeByRootWorkspace(root.ID)
+		if err == nil && runtime.Status != store.ManagedRuntimeStopped {
+			skipped = append(skipped, root.ID)
+			continue
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return nil, fmt.Errorf("load managed runtime for %s: %w", root.ID, err)
+		}
+
+		if _, err := orch.PruneWorkspaceLineage(root.ID); err != nil {
+			return nil, err
+		}
+		pruned = append(pruned, root.ID)
+	}
+
+	return &workspacePruneResult{PrunedRoots: pruned, SkippedRoots: skipped}, nil
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func newWorkspaceStatusCmd() *cobra.Command {
