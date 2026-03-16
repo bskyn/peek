@@ -347,6 +347,273 @@ func TestManagedSupervisorPropagatesProviderExitCode(t *testing.T) {
 	}
 }
 
+func TestPrepareManagedStartReattachesStoppedLeaseOwner(t *testing.T) {
+	repoDir := testManagedRepo(t)
+	st := openManagedStore(t)
+	now := time.Now().UTC()
+
+	if err := st.CreateSession(event.Session{
+		ID:          "s-root",
+		Source:      "claude",
+		ProjectPath: repoDir,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkspace(workspace.Workspace{
+		ID:           "ws-root",
+		Status:       workspace.StatusFrozen,
+		ProjectPath:  repoDir,
+		WorktreePath: repoDir,
+		IsRoot:       true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-root",
+		SessionID:   "s-root",
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveBranchPath(workspace.BranchPathSegment{WorkspaceID: "ws-root", Depth: 0, Ordinal: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertManagedRuntime(store.ManagedRuntime{
+		ID:                "rt-root",
+		ProjectPath:       repoDir,
+		RootWorkspaceID:   "ws-root",
+		ActiveWorkspaceID: "ws-root",
+		ActiveSessionID:   "s-root",
+		Source:            "claude",
+		Status:            store.ManagedRuntimeStopped,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertCheckoutLease(store.CheckoutLease{
+		CheckoutPath: repoDir,
+		RuntimeID:    "rt-root",
+		WorkspaceID:  "ws-root",
+		ClaimedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start, err := prepareManagedStart(
+		st,
+		managed.NewOrchestrator(st, repoDir, filepath.Join(t.TempDir(), "worktrees")),
+		managed.SourceClaude,
+		repoDir,
+		"",
+		[]string{"--model", "sonnet"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !start.reusedRuntime {
+		t.Fatal("expected runtime reattach")
+	}
+	if start.runtimeID != "rt-root" {
+		t.Fatalf("expected rt-root, got %s", start.runtimeID)
+	}
+	if start.activeWorktree != repoDir {
+		t.Fatalf("expected active worktree %s, got %s", repoDir, start.activeWorktree)
+	}
+
+	runtime, err := st.GetManagedRuntime("rt-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ActiveSessionID == "s-root" {
+		t.Fatal("expected a new reattach session id")
+	}
+	reattachSession, err := st.GetSession(runtime.ActiveSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reattachSession.ProjectPath != repoDir {
+		t.Fatalf("expected reattach session project path %s, got %s", repoDir, reattachSession.ProjectPath)
+	}
+}
+
+func TestPrepareManagedStartIsolatesRootOnContention(t *testing.T) {
+	repoDir := testManagedRepo(t)
+	st := openManagedStore(t)
+	now := time.Now().UTC()
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# changed in root checkout\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.CreateSession(event.Session{
+		ID:          "s-root",
+		Source:      "claude",
+		ProjectPath: repoDir,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkspace(workspace.Workspace{
+		ID:           "ws-root",
+		Status:       workspace.StatusActive,
+		ProjectPath:  repoDir,
+		WorktreePath: repoDir,
+		IsRoot:       true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-root",
+		SessionID:   "s-root",
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveBranchPath(workspace.BranchPathSegment{WorkspaceID: "ws-root", Depth: 0, Ordinal: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertManagedRuntime(store.ManagedRuntime{
+		ID:                "rt-root",
+		ProjectPath:       repoDir,
+		RootWorkspaceID:   "ws-root",
+		ActiveWorkspaceID: "ws-root",
+		ActiveSessionID:   "s-root",
+		Source:            "claude",
+		Status:            store.ManagedRuntimeRunning,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertCheckoutLease(store.CheckoutLease{
+		CheckoutPath: repoDir,
+		RuntimeID:    "rt-root",
+		WorkspaceID:  "ws-root",
+		ClaimedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start, err := prepareManagedStart(
+		st,
+		managed.NewOrchestrator(st, repoDir, filepath.Join(t.TempDir(), "worktrees")),
+		managed.SourceClaude,
+		repoDir,
+		"",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !start.isolatedRoot {
+		t.Fatal("expected isolated root worktree")
+	}
+	if start.activeWorktree == repoDir {
+		t.Fatal("expected a distinct worktree path under contention")
+	}
+	if !strings.Contains(start.activeWorktree, start.runtimeID) {
+		t.Fatalf("expected isolated worktree to include runtime id, got %s", start.activeWorktree)
+	}
+	if _, err := os.Stat(start.activeWorktree); err != nil {
+		t.Fatalf("expected isolated worktree on disk: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(start.activeWorktree, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# changed in root checkout\n" {
+		t.Fatalf("expected isolated runtime to inherit current checkout state, got %q", string(data))
+	}
+}
+
+func TestPrepareManagedStartExplicitRuntimeIDReattachesStoppedIsolatedRuntime(t *testing.T) {
+	repoDir := testManagedRepo(t)
+	st := openManagedStore(t)
+	now := time.Now().UTC()
+	worktreePath := filepath.Join(t.TempDir(), "isolated-root")
+	if err := managed.MaterializeRef("HEAD", worktreePath, repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.CreateSession(event.Session{
+		ID:          "s-isolated",
+		Source:      "claude",
+		ProjectPath: worktreePath,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkspace(workspace.Workspace{
+		ID:           "ws-isolated",
+		Status:       workspace.StatusFrozen,
+		ProjectPath:  repoDir,
+		WorktreePath: worktreePath,
+		GitRef:       "HEAD",
+		IsRoot:       true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-isolated",
+		SessionID:   "s-isolated",
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveBranchPath(workspace.BranchPathSegment{WorkspaceID: "ws-isolated", Depth: 0, Ordinal: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertManagedRuntime(store.ManagedRuntime{
+		ID:                "rt-isolated",
+		ProjectPath:       repoDir,
+		RootWorkspaceID:   "ws-isolated",
+		ActiveWorkspaceID: "ws-isolated",
+		ActiveSessionID:   "s-isolated",
+		Source:            "claude",
+		Status:            store.ManagedRuntimeStopped,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start, err := prepareManagedStart(
+		st,
+		managed.NewOrchestrator(st, repoDir, filepath.Join(t.TempDir(), "worktrees")),
+		managed.SourceClaude,
+		repoDir,
+		"rt-isolated",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !start.reusedRuntime {
+		t.Fatal("expected explicit runtime reattach")
+	}
+	if start.runtimeID != "rt-isolated" {
+		t.Fatalf("expected rt-isolated, got %s", start.runtimeID)
+	}
+	if start.activeWorktree != worktreePath {
+		t.Fatalf("expected explicit reattach to use existing isolated worktree %s, got %s", worktreePath, start.activeWorktree)
+	}
+}
+
 func testManagedRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

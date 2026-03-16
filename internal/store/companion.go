@@ -36,6 +36,7 @@ type CompanionServiceState struct {
 	ServiceName string
 	Role        string
 	Status      CompanionServiceStatus
+	PID         int
 	TargetURL   string
 	LastError   string
 	StartedAt   time.Time
@@ -92,14 +93,15 @@ func (s *Store) ReplaceCompanionServiceStates(runtimeID string, states []Compani
 	for _, state := range states {
 		if _, err := tx.Exec(
 			`INSERT INTO companion_service_states (
-				runtime_id, workspace_id, service_name, role, status, target_url, last_error,
+				runtime_id, workspace_id, service_name, role, status, pid, target_url, last_error,
 				started_at, ready_at, stopped_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			state.RuntimeID,
 			state.WorkspaceID,
 			state.ServiceName,
 			state.Role,
 			string(state.Status),
+			state.PID,
 			state.TargetURL,
 			state.LastError,
 			formatOptionalTime(state.StartedAt),
@@ -115,7 +117,7 @@ func (s *Store) ReplaceCompanionServiceStates(runtimeID string, states []Compani
 
 func (s *Store) ListCompanionServiceStates(runtimeID string) ([]CompanionServiceState, error) {
 	rows, err := s.db.Query(
-		`SELECT runtime_id, workspace_id, service_name, role, status, target_url, last_error,
+		`SELECT runtime_id, workspace_id, service_name, role, status, pid, target_url, last_error,
 		        started_at, ready_at, stopped_at, updated_at
 		   FROM companion_service_states
 		  WHERE runtime_id = ?
@@ -180,6 +182,7 @@ func scanCompanionServiceState(scanner interface {
 		&state.ServiceName,
 		&state.Role,
 		&state.Status,
+		&state.PID,
 		&state.TargetURL,
 		&state.LastError,
 		&startedAt,

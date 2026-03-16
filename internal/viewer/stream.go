@@ -12,6 +12,7 @@ const streamHeartbeat = 15 * time.Second
 // StreamFilter scopes SSE delivery.
 type StreamFilter struct {
 	SessionID string
+	RuntimeID string
 }
 
 // NewStreamHandler returns the SSE endpoint used by the web app.
@@ -25,16 +26,20 @@ func NewStreamHandler(broker *Broker) http.Handler {
 
 		filter := StreamFilter{
 			SessionID: r.URL.Query().Get("session_id"),
+			RuntimeID: r.URL.Query().Get("runtime_id"),
 		}
 
 		var (
 			ch          <-chan LiveEnvelope
 			unsubscribe func()
 		)
-		if filter.SessionID == "" {
-			ch, unsubscribe = broker.SubscribeAll()
-		} else {
+		switch {
+		case filter.SessionID != "":
 			ch, unsubscribe = broker.SubscribeSession(filter.SessionID)
+		case filter.RuntimeID != "":
+			ch, unsubscribe = broker.SubscribeRuntime(filter.RuntimeID)
+		default:
+			ch, unsubscribe = broker.SubscribeAll()
 		}
 		defer unsubscribe()
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -82,12 +83,12 @@ func newManagedSupervisor(st *store.Store, rt *viewer.Runtime, orch *managed.Orc
 				}
 				status.Browser.PathPrefix = companionSpec.Browser.PathPrefix
 				if status.Browser.TargetURL != "" {
-					_ = rt.SetProxyTarget(status.Browser.TargetURL)
+					_ = rt.SetProxyTarget(runtimeID, status.Browser.TargetURL)
 				}
 				if status.Browser.TargetURL == "" {
-					_ = rt.SetProxyTarget("")
+					_ = rt.SetProxyTarget(runtimeID, "")
 				}
-				rt.SetRuntimeStatus(status)
+				rt.SetRuntimeStatus(runtimeID, status)
 			},
 		)
 	}
@@ -112,11 +113,6 @@ func (s *managedSupervisor) Run(ctx context.Context) error {
 	}
 	defer func() {
 		_ = s.st.ParkManagedRuntime(s.runtimeID, s.rootWorkspaceID, s.activeSessionID)
-	}()
-	defer func() {
-		if s.companionMgr != nil {
-			_ = s.companionMgr.Stop(context.Background())
-		}
 	}()
 
 	activeWorkspace, err := s.st.GetWorkspace(s.activeWorkspaceID)
@@ -147,9 +143,10 @@ func (s *managedSupervisor) Run(ctx context.Context) error {
 
 func (s *managedSupervisor) runLaunch(ctx context.Context, spec managed.ResumeSpec) (managed.ResumeSpec, string, string, error, bool) {
 	_ = s.st.TouchManagedRuntime(s.runtimeID, spec.WorkspaceID, spec.SessionID)
-	publishSessionSummary(s.st, s.viewer, spec.SessionID)
+	publishRuntimeSessionSummary(s.st, s.viewer, s.runtimeID, spec.SessionID)
 	if s.viewer != nil {
-		s.viewer.SetActiveSessionID(spec.SessionID)
+		s.viewer.SetCurrentRuntimeID(s.runtimeID)
+		s.viewer.SetActiveSessionID(s.runtimeID, spec.SessionID)
 	}
 
 	launchCtx, cancel := context.WithCancel(ctx)
@@ -173,7 +170,7 @@ func (s *managedSupervisor) runLaunch(ctx context.Context, spec managed.ResumeSp
 	}
 
 	checkpoints := managed.NewCheckpointEngine(s.st, spec.WorkspaceID, spec.SessionID, spec.WorktreePath)
-	go tailManagedLaunch(launchCtx, s.st, s.viewer, spec, checkpoints)
+	go tailManagedLaunch(launchCtx, s.st, s.viewer, s.runtimeID, spec, checkpoints)
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -391,5 +388,8 @@ func liveManagedRuntimeForWorkspace(st *store.Store, workspaceID string) (*store
 }
 
 func managedWorktreeBase() string {
+	if dbPath == "" {
+		return filepath.Join(os.TempDir(), "peek-worktrees")
+	}
 	return filepath.Join(filepath.Dir(dbPath), "worktrees")
 }

@@ -4,22 +4,32 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/usage"
+	"github.com/google/uuid"
 )
 
+const runtimeRequestPollInterval = 200 * time.Millisecond
+const runtimeRequestTimeout = 20 * time.Second
+const runtimeStaleAfter = 3 * time.Second
+
 type statusResponse struct {
-	ActiveSessionID string                    `json:"active_session_id"`
-	Runtime         *companion.StatusSnapshot `json:"runtime,omitempty"`
+	CurrentRuntimeID string                       `json:"current_runtime_id,omitempty"`
+	ActiveSessionID  string                       `json:"active_session_id"`
+	Runtime          *companion.StatusSnapshot    `json:"runtime,omitempty"`
+	Runtimes         []store.ManagedRuntimeView   `json:"runtimes,omitempty"`
+	Workspaces       []store.RuntimeWorkspaceView `json:"workspaces,omitempty"`
 }
 
 // NewHandler builds the API and static routes for the viewer runtime.
@@ -33,26 +43,43 @@ func NewHandler(st *store.Store, rt *Runtime) (http.Handler, error) {
 	mux.HandleFunc("GET /api/sessions", handleListSessions(st))
 	mux.HandleFunc("GET /api/sessions/{id}", handleGetSession(st))
 	mux.HandleFunc("GET /api/sessions/{id}/events", handleGetSessionEvents(st))
-	mux.HandleFunc("GET /api/status", handleGetStatus(rt))
+	mux.HandleFunc("GET /api/status", handleGetStatus(st, rt))
 	mux.Handle("GET /api/stream", NewStreamHandler(rt.Broker()))
-	mux.Handle("/app/", handleAppProxy(rt))
+	mux.HandleFunc("POST /api/runtimes/{id}/workspaces/{workspace_id}/switch", handleSwitchRuntimeWorkspace(st))
+	mux.Handle("/app/", handleAppProxy(st, rt, ""))
+	mux.Handle("/r/", handleRuntimeAppProxy(st, rt))
 	mux.Handle("/", staticHandler)
 	return mux, nil
 }
 
-func handleGetStatus(rt *Runtime) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		status := rt.RuntimeStatus()
-		writeJSON(w, http.StatusOK, statusResponse{
-			ActiveSessionID: rt.ActiveSessionID(),
-			Runtime:         &status,
-		})
+func handleGetStatus(st *store.Store, rt *Runtime) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		runtimeID := r.URL.Query().Get("runtime_id")
+		payload, err := buildStatusResponse(st, rt, runtimeID)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, sql.ErrNoRows) {
+				status = http.StatusNotFound
+			}
+			writeAPIError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, payload)
 	}
 }
 
-func handleAppProxy(rt *Runtime) http.Handler {
+func handleAppProxy(st *store.Store, rt *Runtime, runtimeID string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		target := rt.proxyTarget()
+		target := rt.proxyTarget(runtimeID)
+		if target == nil && runtimeID != "" {
+			managedRuntime, err := st.GetDetachedCompanionRuntime(runtimeID)
+			if err == nil && managedRuntime.BrowserTargetURL != "" {
+				parsed, parseErr := url.Parse(managedRuntime.BrowserTargetURL)
+				if parseErr == nil {
+					target = parsed
+				}
+			}
+		}
 		if target == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "primary app is not ready")
 			return
@@ -62,7 +89,7 @@ func handleAppProxy(rt *Runtime) http.Handler {
 		originalDirector := reverseProxy.Director
 		reverseProxy.Director = func(req *http.Request) {
 			originalDirector(req)
-			req.URL.Path = joinProxyPath(target, strings.TrimPrefix(r.URL.Path, "/app"))
+			req.URL.Path = joinProxyPath(target, proxySuffix(r.URL.Path, runtimeID))
 			req.URL.RawPath = req.URL.Path
 			req.Host = target.Host
 		}
@@ -73,14 +100,55 @@ func handleAppProxy(rt *Runtime) http.Handler {
 	})
 }
 
+func handleRuntimeAppProxy(st *store.Store, rt *Runtime) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pathValue := strings.TrimPrefix(r.URL.Path, "/r/")
+		parts := strings.SplitN(pathValue, "/", 3)
+		if len(parts) < 2 || parts[0] == "" || parts[1] != "app" {
+			http.NotFound(w, r)
+			return
+		}
+		handleAppProxy(st, rt, parts[0]).ServeHTTP(w, r)
+	})
+}
+
 func handleListSessions(st *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessions, err := st.ListSessionSummaries()
+		runtimeID := r.URL.Query().Get("runtime_id")
+		var (
+			sessions []store.SessionSummary
+			err      error
+		)
+		if runtimeID == "" {
+			sessions, err = st.ListSessionSummaries()
+		} else {
+			sessions, err = st.ListSessionSummariesForRuntime(runtimeID)
+		}
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+	}
+}
+
+func handleSwitchRuntimeWorkspace(st *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		runtimeID := strings.TrimSpace(r.PathValue("id"))
+		workspaceID := strings.TrimSpace(r.PathValue("workspace_id"))
+		resp, err := enqueueRuntimeSwitchRequest(st, runtimeID, workspaceID)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, sql.ErrNoRows) {
+				status = http.StatusNotFound
+			}
+			writeAPIError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"session_id":   resp.ResponseSessionID,
+			"workspace_id": resp.ResponseWorkspaceID,
+		})
 	}
 }
 
@@ -204,4 +272,173 @@ func joinProxyPath(target *url.URL, suffix string) string {
 		return base
 	}
 	return path.Join(base, suffix)
+}
+
+func proxySuffix(requestPath, runtimeID string) string {
+	if runtimeID == "" {
+		return strings.TrimPrefix(requestPath, "/app")
+	}
+	prefix := "/r/" + runtimeID + "/app"
+	return strings.TrimPrefix(requestPath, prefix)
+}
+
+func buildStatusResponse(st *store.Store, rt *Runtime, runtimeID string) (statusResponse, error) {
+	selectedRuntimeID := runtimeID
+	if selectedRuntimeID == "" {
+		selectedRuntimeID = rt.CurrentRuntimeID()
+	}
+
+	runtimes, err := runtimeSiblings(st, selectedRuntimeID)
+	if err != nil {
+		return statusResponse{}, err
+	}
+
+	if selectedRuntimeID == "" {
+		status := rt.RuntimeStatus()
+		return statusResponse{
+			CurrentRuntimeID: rt.CurrentRuntimeID(),
+			ActiveSessionID:  rt.ActiveSessionID(),
+			Runtime:          &status,
+			Runtimes:         runtimes,
+		}, nil
+	}
+
+	workspaces, err := st.ListRuntimeWorkspaceViews(selectedRuntimeID)
+	if err != nil {
+		return statusResponse{}, err
+	}
+	activeSessionID := ""
+	selectedStatus := rt.RuntimeStatus()
+	if rt.CurrentRuntimeID() != selectedRuntimeID {
+		selectedStatus, activeSessionID, err = runtimeStatusFromStore(st, selectedRuntimeID)
+		if err != nil {
+			return statusResponse{}, err
+		}
+	} else {
+		activeSessionID = rt.ActiveSessionID()
+	}
+
+	return statusResponse{
+		CurrentRuntimeID: selectedRuntimeID,
+		ActiveSessionID:  activeSessionID,
+		Runtime:          &selectedStatus,
+		Runtimes:         runtimes,
+		Workspaces:       workspaces,
+	}, nil
+}
+
+func runtimeSiblings(st *store.Store, runtimeID string) ([]store.ManagedRuntimeView, error) {
+	if runtimeID == "" {
+		return st.ListManagedRuntimeViews()
+	}
+	runtime, err := st.GetManagedRuntime(runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	projectRuntimes, err := st.ListManagedRuntimesByProjectPath(runtime.ProjectPath)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]store.ManagedRuntimeView, 0, len(projectRuntimes))
+	for _, candidate := range projectRuntimes {
+		view, err := st.GetManagedRuntimeView(candidate.ID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, view)
+	}
+	return result, nil
+}
+
+func runtimeStatusFromStore(st *store.Store, runtimeID string) (companion.StatusSnapshot, string, error) {
+	detached, err := st.GetDetachedCompanionRuntime(runtimeID)
+	if err != nil {
+		return companion.StatusSnapshot{}, "", err
+	}
+	services, err := st.ListCompanionServiceStates(runtimeID)
+	if err != nil {
+		return companion.StatusSnapshot{}, "", err
+	}
+	runtime, err := st.GetManagedRuntime(runtimeID)
+	if err != nil {
+		return companion.StatusSnapshot{}, "", err
+	}
+
+	summaries := make([]companion.ServiceSummary, 0, len(services))
+	for _, service := range services {
+		summaries = append(summaries, companion.ServiceSummary{
+			Name:      service.ServiceName,
+			Role:      service.Role,
+			Status:    service.Status,
+			TargetURL: service.TargetURL,
+			LastError: service.LastError,
+		})
+	}
+
+	return companion.StatusSnapshot{
+		Enabled:           detached.ConfigSource != "",
+		ConfigSource:      detached.ConfigSource,
+		ActiveWorkspaceID: detached.ActiveWorkspaceID,
+		Phase:             companion.ActivationPhase(detached.Phase),
+		Message:           detached.Message,
+		Bootstrap: companion.BootstrapSummary{
+			Status: store.BootstrapSucceeded,
+			Reused: true,
+		},
+		Services: summaries,
+		Browser: companion.BrowserSummary{
+			PathPrefix: detached.BrowserPathPrefix,
+			TargetURL:  detached.BrowserTargetURL,
+		},
+		UpdatedAt: detached.UpdatedAt,
+	}, runtime.ActiveSessionID, nil
+}
+
+func enqueueRuntimeSwitchRequest(st *store.Store, runtimeID, workspaceID string) (*store.ManagedRuntimeRequest, error) {
+	runtime, err := st.GetManagedRuntime(runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	if runtime.Status != store.ManagedRuntimeRunning || time.Since(runtime.HeartbeatAt) > runtimeStaleAfter {
+		return nil, fmt.Errorf("runtime %s is not live", runtimeID)
+	}
+	rootWorkspaceID, err := st.LineageRootWorkspaceID(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if rootWorkspaceID != runtime.RootWorkspaceID {
+		return nil, fmt.Errorf("workspace %s does not belong to runtime %s", workspaceID, runtimeID)
+	}
+	now := time.Now().UTC()
+	req := store.ManagedRuntimeRequest{
+		ID:                "rtreq-" + uuid.New().String(),
+		RuntimeID:         runtimeID,
+		Kind:              "switch",
+		TargetWorkspaceID: workspaceID,
+		Status:            store.ManagedRuntimeRequestPending,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := st.CreateManagedRuntimeRequest(req); err != nil {
+		return nil, err
+	}
+	return waitForRuntimeRequest(st, req.ID)
+}
+
+func waitForRuntimeRequest(st *store.Store, requestID string) (*store.ManagedRuntimeRequest, error) {
+	deadline := time.Now().Add(runtimeRequestTimeout)
+	for time.Now().Before(deadline) {
+		req, err := st.GetManagedRuntimeRequest(requestID)
+		if err != nil {
+			return nil, err
+		}
+		switch req.Status {
+		case store.ManagedRuntimeRequestCompleted:
+			return req, nil
+		case store.ManagedRuntimeRequestFailed:
+			return nil, fmt.Errorf("%s", req.Error)
+		}
+		time.Sleep(runtimeRequestPollInterval)
+	}
+	return nil, fmt.Errorf("timed out waiting for runtime request %s", requestID)
 }

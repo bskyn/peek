@@ -2,14 +2,18 @@ package companion
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -84,12 +88,18 @@ type serviceHandle struct {
 	cmd    *exec.Cmd
 	done   chan struct{}
 	err    error
+	pid    int
 	target string
 }
 
 type serviceStartResult struct {
 	summary ServiceSummary
 	handle  *serviceHandle
+}
+
+type resolvedServiceSpec struct {
+	CompanionServiceSpec
+	TargetURL string
 }
 
 func NewManager(st *store.Store, repoDir, runtimeID string, spec *ProjectRuntimeSpec, onStatus func(StatusSnapshot)) *Manager {
@@ -113,8 +123,35 @@ func NewManager(st *store.Store, repoDir, runtimeID string, spec *ProjectRuntime
 			UpdatedAt: time.Now().UTC(),
 		},
 	}
+	manager.loadPersistedState()
 	manager.emitStatusLocked()
 	return manager
+}
+
+func (m *Manager) loadPersistedState() {
+	if runtime, err := m.st.GetDetachedCompanionRuntime(m.runtimeID); err == nil {
+		m.status.ConfigSource = runtime.ConfigSource
+		m.status.ActiveWorkspaceID = runtime.ActiveWorkspaceID
+		m.status.Phase = ActivationPhase(runtime.Phase)
+		m.status.Message = runtime.Message
+		m.status.Browser.PathPrefix = runtime.BrowserPathPrefix
+		m.status.Browser.TargetURL = runtime.BrowserTargetURL
+		m.status.UpdatedAt = runtime.UpdatedAt
+	}
+	states, err := m.st.ListCompanionServiceStates(m.runtimeID)
+	if err != nil {
+		return
+	}
+	m.status.Services = make([]ServiceSummary, 0, len(states))
+	for _, state := range states {
+		m.status.Services = append(m.status.Services, ServiceSummary{
+			Name:      state.ServiceName,
+			Role:      state.Role,
+			Status:    state.Status,
+			TargetURL: state.TargetURL,
+			LastError: state.LastError,
+		})
+	}
 }
 
 func (m *Manager) Snapshot() StatusSnapshot {
@@ -129,6 +166,12 @@ func (m *Manager) Snapshot() StatusSnapshot {
 func (m *Manager) Activate(ctx context.Context, workspaceID, worktreePath string) (ActivationResult, error) {
 	if m == nil {
 		return ActivationResult{}, nil
+	}
+	if result, reused, err := m.tryReuseDetachedRuntime(workspaceID); err != nil {
+		m.fail(workspaceID, err)
+		return ActivationResult{}, err
+	} else if reused {
+		return result, nil
 	}
 
 	m.setPhase(workspaceID, ActivationMaterializing, "materializing workspace assets")
@@ -171,6 +214,7 @@ func (m *Manager) Activate(ctx context.Context, workspaceID, worktreePath string
 	m.status.Services = serviceSummaries
 	m.status.Browser.TargetURL = primaryURL
 	m.status.UpdatedAt = time.Now().UTC()
+	m.persistDetachedRuntimeLocked()
 	m.emitStatusLocked()
 	m.mu.Unlock()
 	return ActivationResult{PrimaryTargetURL: primaryURL}, nil
@@ -189,6 +233,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.status.Services = nil
 	m.status.Browser.TargetURL = ""
 	m.status.UpdatedAt = time.Now().UTC()
+	m.persistDetachedRuntimeLocked()
 	m.emitStatusLocked()
 	m.mu.Unlock()
 	return nil
@@ -201,6 +246,7 @@ func (m *Manager) setPhase(workspaceID string, phase ActivationPhase, message st
 	m.status.Phase = phase
 	m.status.Message = message
 	m.status.UpdatedAt = time.Now().UTC()
+	m.persistDetachedRuntimeLocked()
 	m.emitStatusLocked()
 }
 
@@ -218,7 +264,55 @@ func (m *Manager) fail(workspaceID string, err error) {
 		}
 	}
 	m.status.UpdatedAt = time.Now().UTC()
+	m.persistDetachedRuntimeLocked()
 	m.emitStatusLocked()
+}
+
+func (m *Manager) tryReuseDetachedRuntime(workspaceID string) (ActivationResult, bool, error) {
+	runtime, err := m.st.GetDetachedCompanionRuntime(m.runtimeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ActivationResult{}, false, nil
+		}
+		return ActivationResult{}, false, fmt.Errorf("load detached runtime: %w", err)
+	}
+	if runtime.ActiveWorkspaceID != workspaceID {
+		return ActivationResult{}, false, nil
+	}
+	states, err := m.st.ListCompanionServiceStates(m.runtimeID)
+	if err != nil {
+		return ActivationResult{}, false, fmt.Errorf("load detached service state: %w", err)
+	}
+	if len(states) == 0 {
+		return ActivationResult{}, false, nil
+	}
+	summaries := make([]ServiceSummary, 0, len(states))
+	for _, state := range states {
+		if state.PID <= 0 || !processAlive(state.PID) || state.Status != store.CompanionServiceReady {
+			return ActivationResult{}, false, nil
+		}
+		summaries = append(summaries, ServiceSummary{
+			Name:      state.ServiceName,
+			Role:      state.Role,
+			Status:    state.Status,
+			TargetURL: state.TargetURL,
+			LastError: state.LastError,
+		})
+	}
+	m.mu.Lock()
+	m.status.ActiveWorkspaceID = runtime.ActiveWorkspaceID
+	m.status.Phase = ActivationReady
+	m.status.Message = "detached runtime reattached"
+	m.status.Bootstrap.Status = store.BootstrapSucceeded
+	m.status.Bootstrap.Reused = true
+	m.status.Services = summaries
+	m.status.Browser.PathPrefix = runtime.BrowserPathPrefix
+	m.status.Browser.TargetURL = runtime.BrowserTargetURL
+	m.status.UpdatedAt = time.Now().UTC()
+	m.persistDetachedRuntimeLocked()
+	m.emitStatusLocked()
+	m.mu.Unlock()
+	return ActivationResult{PrimaryTargetURL: runtime.BrowserTargetURL}, true, nil
 }
 
 func (m *Manager) materialize(worktreePath string) error {
@@ -329,21 +423,27 @@ func (m *Manager) startServices(ctx context.Context, workspaceID, worktreePath s
 	primaryURL := ""
 
 	for _, service := range m.spec.Services {
-		command := exec.CommandContext(ctx, service.Command[0], service.Command[1:]...)
+		resolved, err := m.resolveServiceSpec(service)
+		if err != nil {
+			return nil, "", err
+		}
+		command := exec.Command(service.Command[0], service.Command[1:]...)
 		command.Dir = joinWorkdir(worktreePath, service.Workdir)
-		command.Env = mergeEnv(service.Env)
+		command.Env = mergeEnv(resolved.Env)
 		command.Stdout = io.Discard
 		command.Stderr = io.Discard
+		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		handle := &serviceHandle{
 			spec:   service,
 			cmd:    command,
 			done:   make(chan struct{}),
-			target: serviceTargetURL(service),
+			target: resolved.TargetURL,
 		}
 		if err := command.Start(); err != nil {
 			return nil, "", fmt.Errorf("start service %s: %w", service.Name, err)
 		}
+		handle.pid = command.Process.Pid
 
 		go func(h *serviceHandle) {
 			h.err = h.cmd.Wait()
@@ -355,7 +455,7 @@ func (m *Manager) startServices(ctx context.Context, workspaceID, worktreePath s
 			Name:      service.Name,
 			Role:      service.Role,
 			Status:    store.CompanionServiceStarting,
-			TargetURL: serviceTargetURL(service),
+			TargetURL: resolved.TargetURL,
 		}
 		results = append(results, serviceStartResult{summary: summary, handle: handle})
 		states = append(states, store.CompanionServiceState{
@@ -364,7 +464,8 @@ func (m *Manager) startServices(ctx context.Context, workspaceID, worktreePath s
 			ServiceName: service.Name,
 			Role:        service.Role,
 			Status:      store.CompanionServiceStarting,
-			TargetURL:   serviceTargetURL(service),
+			PID:         handle.pid,
+			TargetURL:   resolved.TargetURL,
 			StartedAt:   startedAt,
 			UpdatedAt:   startedAt,
 		})
@@ -373,7 +474,7 @@ func (m *Manager) startServices(ctx context.Context, workspaceID, worktreePath s
 		}
 		m.publishServiceSummaries(results)
 
-		if err := waitForReady(ctx, handle, worktreePath, service); err != nil {
+		if err := waitForReady(ctx, handle, worktreePath, resolved); err != nil {
 			summary.Status = store.CompanionServiceFailed
 			summary.LastError = err.Error()
 			results[len(results)-1].summary = summary
@@ -397,7 +498,7 @@ func (m *Manager) startServices(ctx context.Context, workspaceID, worktreePath s
 		m.publishServiceSummaries(results)
 
 		if service.Role == ServiceRolePrimary {
-			primaryURL = serviceTargetURL(service)
+			primaryURL = resolved.TargetURL
 		}
 	}
 
@@ -412,7 +513,7 @@ func (m *Manager) startServices(ctx context.Context, workspaceID, worktreePath s
 	return summaries, primaryURL, nil
 }
 
-func waitForReady(ctx context.Context, handle *serviceHandle, worktreePath string, service CompanionServiceSpec) error {
+func waitForReady(ctx context.Context, handle *serviceHandle, worktreePath string, service resolvedServiceSpec) error {
 	probe := service.Ready
 	timeout := time.Duration(probe.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
@@ -475,7 +576,34 @@ func (m *Manager) stopServices(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if len(handles) == 0 {
-		return m.st.ReplaceCompanionServiceStates(m.runtimeID, nil)
+		states, err := m.st.ListCompanionServiceStates(m.runtimeID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		if len(states) == 0 {
+			return nil
+		}
+		results := make([]store.CompanionServiceState, 0, len(states))
+		for _, state := range states {
+			stopCtx, cancel := context.WithTimeout(ctx, serviceStopTimeout)
+			_ = stopPID(stopCtx, state.PID)
+			cancel()
+			now := time.Now().UTC()
+			results = append(results, store.CompanionServiceState{
+				RuntimeID:   state.RuntimeID,
+				WorkspaceID: state.WorkspaceID,
+				ServiceName: state.ServiceName,
+				Role:        state.Role,
+				Status:      store.CompanionServiceStopped,
+				TargetURL:   state.TargetURL,
+				StoppedAt:   now,
+				UpdatedAt:   now,
+			})
+		}
+		return m.st.ReplaceCompanionServiceStates(m.runtimeID, results)
 	}
 
 	results := make([]store.CompanionServiceState, 0, len(handles))
@@ -496,6 +624,7 @@ func (m *Manager) stopServices(ctx context.Context) error {
 			ServiceName: handle.spec.Name,
 			Role:        handle.spec.Role,
 			Status:      store.CompanionServiceStopped,
+			PID:         0,
 			TargetURL:   handle.target,
 			StoppedAt:   now,
 			UpdatedAt:   now,
@@ -520,6 +649,7 @@ func (m *Manager) stopHandles(ctx context.Context, results []serviceStartResult)
 			ServiceName: result.summary.Name,
 			Role:        result.summary.Role,
 			Status:      store.CompanionServiceStopped,
+			PID:         0,
 			TargetURL:   result.summary.TargetURL,
 			StoppedAt:   now,
 			UpdatedAt:   now,
@@ -529,7 +659,13 @@ func (m *Manager) stopHandles(ctx context.Context, results []serviceStartResult)
 }
 
 func stopHandle(ctx context.Context, handle *serviceHandle) error {
-	if handle == nil || handle.cmd == nil || handle.cmd.Process == nil {
+	if handle == nil {
+		return nil
+	}
+	if handle.pid > 0 {
+		return stopPID(ctx, handle.pid)
+	}
+	if handle.cmd == nil || handle.cmd.Process == nil {
 		return nil
 	}
 	_ = handle.cmd.Process.Signal(syscall.SIGINT)
@@ -552,6 +688,7 @@ func (m *Manager) publishServiceSummaries(results []serviceStartResult) {
 	}
 	m.status.Services = summaries
 	m.status.UpdatedAt = time.Now().UTC()
+	m.persistDetachedRuntimeLocked()
 	m.emitStatusLocked()
 }
 
@@ -592,9 +729,167 @@ func mergeEnv(extra map[string]string) []string {
 	return env
 }
 
-func serviceTargetURL(service CompanionServiceSpec) string {
+func (m *Manager) persistDetachedRuntimeLocked() {
+	_ = m.st.UpsertDetachedCompanionRuntime(store.DetachedCompanionRuntime{
+		RuntimeID:         m.runtimeID,
+		ActiveWorkspaceID: m.status.ActiveWorkspaceID,
+		ConfigSource:      m.status.ConfigSource,
+		Phase:             string(m.status.Phase),
+		Message:           m.status.Message,
+		BrowserPathPrefix: m.status.Browser.PathPrefix,
+		BrowserTargetURL:  m.status.Browser.TargetURL,
+		UpdatedAt:         m.status.UpdatedAt,
+	})
+}
+
+func (m *Manager) resolveServiceSpec(service CompanionServiceSpec) (resolvedServiceSpec, error) {
+	lease, err := m.ensurePortLease(service.Name)
+	if err != nil {
+		return resolvedServiceSpec{}, fmt.Errorf("ensure port lease for %s: %w", service.Name, err)
+	}
+	resolved := resolvedServiceSpec{CompanionServiceSpec: service}
+	resolved.Env = copyEnvMap(service.Env)
+	if resolved.Env == nil {
+		resolved.Env = make(map[string]string)
+	}
+	resolved.Env["PORT"] = strconv.Itoa(lease.Port)
+	resolved.Env["PEEK_PORT"] = strconv.Itoa(lease.Port)
+	if _, ok := resolved.Env["HOST"]; !ok {
+		resolved.Env["HOST"] = lease.Host
+	}
+	resolved.Ready = service.Ready
+	resolved.Ready.URL = rewriteURLPort(service.Ready.URL, lease.Host, lease.Port)
+	resolved.TargetURL = rewriteURLPort(defaultServiceTargetURL(service), lease.Host, lease.Port)
+	return resolved, nil
+}
+
+func (m *Manager) ensurePortLease(serviceName string) (*store.PortLease, error) {
+	if lease, err := m.st.GetPortLease(m.runtimeID, serviceName); err == nil {
+		return lease, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	startPort, err := m.nextAvailablePort()
+	if err != nil {
+		return nil, err
+	}
+	for port := startPort; port < 52000; port++ {
+		if !portAppearsAvailable("127.0.0.1", port) {
+			continue
+		}
+		now := time.Now().UTC()
+		lease := &store.PortLease{
+			RuntimeID:   m.runtimeID,
+			ServiceName: serviceName,
+			Host:        "127.0.0.1",
+			Port:        port,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if err := m.st.UpsertPortLease(*lease); err != nil {
+			if isPortLeaseConflict(err) {
+				continue
+			}
+			return nil, err
+		}
+		return lease, nil
+	}
+	return nil, fmt.Errorf("no managed companion ports available")
+}
+
+func (m *Manager) nextAvailablePort() (int, error) {
+	leases, err := m.st.ListPortLeases()
+	if err != nil {
+		return 0, err
+	}
+	used := make(map[int]struct{}, len(leases))
+	for _, lease := range leases {
+		if lease.Host == "127.0.0.1" {
+			used[lease.Port] = struct{}{}
+		}
+	}
+	for port := 42000; port < 52000; port++ {
+		if _, exists := used[port]; !exists {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no managed companion ports available")
+}
+
+func rewriteURLPort(rawURL, host string, port int) string {
+	if rawURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if parsed.Host == "" {
+		return rawURL
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" || hostname == "localhost" || hostname == "127.0.0.1" {
+		parsed.Host = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	return parsed.String()
+}
+
+func defaultServiceTargetURL(service CompanionServiceSpec) string {
 	if service.TargetURL != "" {
 		return service.TargetURL
 	}
 	return service.Ready.URL
+}
+
+func copyEnvMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func portAppearsAvailable(host string, port int) bool {
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		// Some sandboxes disallow bind() entirely; fall back to the DB lease check.
+		return os.Getenv("GO_WANT_HELPER_PROCESS") != "" || strings.Contains(err.Error(), "operation not permitted")
+	}
+	_ = listener.Close()
+	return true
+}
+
+func isPortLeaseConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: port_leases.host, port_leases.port")
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return syscall.Kill(pid, 0) == nil
+}
+
+func stopPID(ctx context.Context, pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	_ = syscall.Kill(pid, syscall.SIGINT)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !processAlive(pid) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			return nil
+		case <-ticker.C:
+		}
+	}
 }

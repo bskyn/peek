@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/bskyn/peek/internal/companion"
@@ -23,7 +22,6 @@ import (
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/tailer"
 	"github.com/bskyn/peek/internal/viewer"
-	"github.com/bskyn/peek/internal/workspace"
 )
 
 func newRunCmd() *cobra.Command {
@@ -49,6 +47,7 @@ func newRunClaudeCmd() *cobra.Command {
 		},
 	}
 	addViewerFlags(cmd)
+	cmd.Flags().StringVar(&runtimeID, "runtime-id", "", "Reattach a specific managed runtime by ID")
 	return cmd
 }
 
@@ -62,6 +61,7 @@ func newRunCodexCmd() *cobra.Command {
 		},
 	}
 	addViewerFlags(cmd)
+	cmd.Flags().StringVar(&runtimeID, "runtime-id", "", "Reattach a specific managed runtime by ID")
 	return cmd
 }
 
@@ -91,56 +91,6 @@ func runManaged(source managed.Source, extraArgs []string) error {
 	}
 	defer st.Close()
 
-	// Generate IDs
-	wsID := fmt.Sprintf("ws-%s", uuid.New().String()[:8])
-	sessID := fmt.Sprintf("%s-managed-%s", source, uuid.New().String()[:8])
-	runtimeID := fmt.Sprintf("rt-%s", uuid.New().String()[:8])
-	now := time.Now().UTC()
-
-	// Create workspace — marked as root since it's the primary checkout
-	ws := workspace.Workspace{
-		ID:           wsID,
-		Status:       workspace.StatusActive,
-		ProjectPath:  absProjectDir,
-		WorktreePath: absProjectDir,
-		IsRoot:       true,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-	if err := st.CreateWorkspace(ws); err != nil {
-		return fmt.Errorf("create workspace: %w", err)
-	}
-
-	// Create session
-	sess := event.Session{
-		ID:          sessID,
-		Source:      string(source),
-		ProjectPath: absProjectDir,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	if err := st.CreateSession(sess); err != nil {
-		return fmt.Errorf("create session: %w", err)
-	}
-
-	// Link workspace to session
-	if err := st.LinkWorkspaceSession(workspace.WorkspaceSession{
-		WorkspaceID: wsID,
-		SessionID:   sessID,
-		CreatedAt:   now,
-	}); err != nil {
-		return fmt.Errorf("link workspace session: %w", err)
-	}
-
-	// Save root branch path
-	if err := st.SaveBranchPath(workspace.BranchPathSegment{
-		WorkspaceID: wsID,
-		Depth:       0,
-		Ordinal:     0,
-	}); err != nil {
-		return fmt.Errorf("save branch path: %w", err)
-	}
-
 	// Context + signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -152,30 +102,41 @@ func runManaged(source managed.Source, extraArgs []string) error {
 		cancel()
 	}()
 
+	orch := managed.NewOrchestrator(st, absProjectDir, managedWorktreeBase())
+	start, err := prepareManagedStart(st, orch, source, absProjectDir, runtimeID, launchArgs)
+	if err != nil {
+		return err
+	}
+
 	// Start viewer
-	rt, err := viewer.Start(ctx, st, buildViewerOptions(sessID), nil)
+	rt, err := viewer.Start(ctx, st, buildViewerOptions(start.activeSessionID, start.runtimeID), nil)
 	if err != nil {
 		return fmt.Errorf("start viewer: %w", err)
 	}
 	if rt != nil {
-		fmt.Printf("Peek viewer: %s\n", rt.InitialURL(buildViewerOptions(sessID)))
-		fmt.Printf("Peek workspace: %s\n\n", wsID)
+		fmt.Printf("Peek viewer: %s\n", rt.InitialURL(buildViewerOptions(start.activeSessionID, start.runtimeID)))
+		fmt.Printf("Peek workspace: %s\n", start.activeWorkspaceID)
+		if start.reusedRuntime {
+			fmt.Printf("Peek runtime: %s (reattached)\n\n", start.runtimeID)
+		} else if start.isolatedRoot {
+			fmt.Printf("Peek runtime: %s (isolated root worktree)\n\n", start.runtimeID)
+		} else {
+			fmt.Printf("Peek runtime: %s\n\n", start.runtimeID)
+		}
 	}
 	if runtimeSpec != nil {
 		fmt.Printf("Peek companion runtime: %s\n", runtimeSpec.ConfigSource)
 	}
-
-	orch := managed.NewOrchestrator(st, absProjectDir, managedWorktreeBase())
 	supervisor := newManagedSupervisor(
 		st,
 		rt,
 		orch,
 		source,
 		launchArgs,
-		runtimeID,
-		wsID,
-		wsID,
-		sessID,
+		start.runtimeID,
+		start.rootWorkspaceID,
+		start.activeWorkspaceID,
+		start.activeSessionID,
 		absProjectDir,
 		runtimeSpec,
 		managedLaunchConfig{},
@@ -185,22 +146,22 @@ func runManaged(source managed.Source, extraArgs []string) error {
 		return err
 	}
 
-	fmt.Printf("\nPeek: workspace %s frozen.\n", wsID)
+	fmt.Printf("\nPeek: workspace %s frozen.\n", start.rootWorkspaceID)
 	return nil
 }
 
 // tailManagedLaunch discovers or resumes the provider session file for one managed launch
 // and tails it silently while checkpoints are captured around tool execution.
-func tailManagedLaunch(ctx context.Context, st *store.Store, rt *viewer.Runtime, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
+func tailManagedLaunch(ctx context.Context, st *store.Store, rt *viewer.Runtime, runtimeID string, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
 	switch {
 	case spec.SourceSessionID != "":
-		tailManagedExistingSession(ctx, st, rt, spec, ce)
+		tailManagedExistingSession(ctx, st, rt, runtimeID, spec, ce)
 	default:
-		tailManagedNewSession(ctx, st, rt, spec, ce)
+		tailManagedNewSession(ctx, st, rt, runtimeID, spec, ce)
 	}
 }
 
-func tailManagedNewSession(ctx context.Context, st *store.Store, rt *viewer.Runtime, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
+func tailManagedNewSession(ctx context.Context, st *store.Store, rt *viewer.Runtime, runtimeID string, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
 	knownFiles := snapshotSessionFiles(spec.Source)
 	switch spec.Source {
 	case managed.SourceClaude:
@@ -208,30 +169,30 @@ func tailManagedNewSession(ctx context.Context, st *store.Store, rt *viewer.Runt
 		if sf == nil {
 			return
 		}
-		tailClaudeSilent(ctx, st, rt, spec.SessionID, sf, ce)
+		tailClaudeSilent(ctx, st, rt, runtimeID, spec.SessionID, sf, ce)
 	case managed.SourceCodex:
 		sf := waitForNewCodexSession(ctx, knownFiles, spec.WorktreePath)
 		if sf == nil {
 			return
 		}
-		tailCodexSilent(ctx, st, rt, spec.SessionID, sf, ce)
+		tailCodexSilent(ctx, st, rt, runtimeID, spec.SessionID, sf, ce)
 	}
 }
 
-func tailManagedExistingSession(ctx context.Context, st *store.Store, rt *viewer.Runtime, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
+func tailManagedExistingSession(ctx context.Context, st *store.Store, rt *viewer.Runtime, runtimeID string, spec managed.ResumeSpec, ce *managed.CheckpointEngine) {
 	switch spec.Source {
 	case managed.SourceClaude:
 		sf, err := claude.Discover(homeDir()+"/.claude", spec.SourceSessionID)
 		if err != nil {
 			return
 		}
-		tailClaudeSilent(ctx, st, rt, spec.SessionID, sf, ce)
+		tailClaudeSilent(ctx, st, rt, runtimeID, spec.SessionID, sf, ce)
 	case managed.SourceCodex:
 		sf, err := codex.Discover(codex.CodexHome(), spec.SourceSessionID)
 		if err != nil {
 			return
 		}
-		tailCodexSilent(ctx, st, rt, spec.SessionID, sf, ce)
+		tailCodexSilent(ctx, st, rt, runtimeID, spec.SessionID, sf, ce)
 	}
 }
 
@@ -300,7 +261,7 @@ func waitForNewCodexSession(ctx context.Context, knownFiles map[string]bool, pro
 
 // tailClaudeSilent tails a Claude session file, persisting events to the store + viewer
 // without rendering to terminal. Captures checkpoints around tool_call/tool_result events.
-func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, sessID string, sf *claude.SessionFile, ce *managed.CheckpointEngine) {
+func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, runtimeID, sessID string, sf *claude.SessionFile, ce *managed.CheckpointEngine) {
 	_ = st.CreateSession(event.Session{
 		ID:              sessID,
 		Source:          "claude",
@@ -311,7 +272,7 @@ func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, 
 	})
 
 	if rt != nil {
-		rt.SetActiveSessionID(sessID)
+		rt.SetActiveSessionID(runtimeID, sessID)
 	}
 
 	tl := tailer.New(sf.Path)
@@ -341,8 +302,8 @@ func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, 
 				captureCheckpointForEvent(ce, ev)
 			}
 
-			publishSessionSummary(st, rt, sessID)
-			publishInsertedEvents(rt, insertedEvents)
+			publishRuntimeSessionSummary(st, rt, runtimeID, sessID)
+			publishRuntimeInsertedEvents(rt, runtimeID, insertedEvents)
 			seq = nextSeq
 		}
 	}()
@@ -360,7 +321,7 @@ func tailClaudeSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, 
 }
 
 // tailCodexSilent tails a Codex session file silently with checkpoint capture.
-func tailCodexSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, sessID string, sf *codex.SessionFile, ce *managed.CheckpointEngine) {
+func tailCodexSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, runtimeID, sessID string, sf *codex.SessionFile, ce *managed.CheckpointEngine) {
 	_ = st.CreateSession(event.Session{
 		ID:              sessID,
 		Source:          "codex",
@@ -371,7 +332,7 @@ func tailCodexSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, s
 	})
 
 	if rt != nil {
-		rt.SetActiveSessionID(sessID)
+		rt.SetActiveSessionID(runtimeID, sessID)
 	}
 
 	tl := tailer.New(sf.Path)
@@ -401,8 +362,8 @@ func tailCodexSilent(ctx context.Context, st *store.Store, rt *viewer.Runtime, s
 				captureCheckpointForEvent(ce, ev)
 			}
 
-			publishSessionSummary(st, rt, sessID)
-			publishInsertedEvents(rt, insertedEvents)
+			publishRuntimeSessionSummary(st, rt, runtimeID, sessID)
+			publishRuntimeInsertedEvents(rt, runtimeID, insertedEvents)
 			seq = nextSeq
 		}
 	}()

@@ -78,12 +78,12 @@ func runClaude(sessionID string, replay bool) error {
 		cancel()
 	}()
 
-	rt, err := viewer.Start(ctx, st, buildViewerOptions("claude-"+sf.SessionID), nil)
+	rt, err := viewer.Start(ctx, st, buildViewerOptions("claude-"+sf.SessionID, ""), nil)
 	if err != nil {
 		return fmt.Errorf("start viewer: %w", err)
 	}
 	if rt != nil {
-		fmt.Printf("Viewer: %s\n\n", rt.InitialURL(buildViewerOptions("claude-"+sf.SessionID)))
+		fmt.Printf("Viewer: %s\n\n", rt.InitialURL(buildViewerOptions("claude-"+sf.SessionID, "")))
 	}
 
 	// Set up renderer
@@ -143,7 +143,7 @@ func tailSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRe
 	// Create or look up our internal session
 	internalSessionID := "claude-" + sf.SessionID
 	if rt != nil {
-		rt.SetActiveSessionID(internalSessionID)
+		rt.SetActiveSessionID("", internalSessionID)
 	}
 	sess := newSessionFromFile(sf, internalSessionID)
 	if err := st.CreateSession(sess); err != nil {
@@ -241,6 +241,10 @@ func tailSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRe
 }
 
 func publishSessionSummary(st *store.Store, rt *viewer.Runtime, sessionID string) {
+	publishRuntimeSessionSummary(st, rt, "", sessionID)
+}
+
+func publishRuntimeSessionSummary(st *store.Store, rt *viewer.Runtime, runtimeID, sessionID string) {
 	if rt == nil {
 		return
 	}
@@ -248,15 +252,19 @@ func publishSessionSummary(st *store.Store, rt *viewer.Runtime, sessionID string
 	if err != nil {
 		return
 	}
-	rt.Broker().PublishSessionUpsert(summary)
+	rt.Broker().PublishSessionUpsert(runtimeID, summary)
 }
 
 func publishInsertedEvents(rt *viewer.Runtime, events []event.Event) {
+	publishRuntimeInsertedEvents(rt, "", events)
+}
+
+func publishRuntimeInsertedEvents(rt *viewer.Runtime, runtimeID string, events []event.Event) {
 	if rt == nil {
 		return
 	}
 	for _, ev := range events {
-		rt.Broker().PublishEventAppend(ev)
+		rt.Broker().PublishEventAppend(runtimeID, ev)
 	}
 }
 

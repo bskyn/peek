@@ -17,6 +17,7 @@ const (
 // ManagedRuntime tracks the live control-plane state for one workspace lineage.
 type ManagedRuntime struct {
 	ID                string
+	ProjectPath       string
 	RootWorkspaceID   string
 	ActiveWorkspaceID string
 	ActiveSessionID   string
@@ -73,10 +74,11 @@ func (s *Store) UpsertManagedRuntime(rt ManagedRuntime) error {
 
 	_, err = s.db.Exec(
 		`INSERT INTO managed_runtimes (
-			id, root_workspace_id, active_workspace_id, active_session_id,
+			id, project_path, root_workspace_id, active_workspace_id, active_session_id,
 			source, launch_args_json, status, heartbeat_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			project_path = excluded.project_path,
 			active_workspace_id = excluded.active_workspace_id,
 			active_session_id = excluded.active_session_id,
 			source = excluded.source,
@@ -85,6 +87,7 @@ func (s *Store) UpsertManagedRuntime(rt ManagedRuntime) error {
 			heartbeat_at = excluded.heartbeat_at,
 			updated_at = excluded.updated_at`,
 		rt.ID,
+		rt.ProjectPath,
 		rt.RootWorkspaceID,
 		rt.ActiveWorkspaceID,
 		rt.ActiveSessionID,
@@ -101,7 +104,7 @@ func (s *Store) UpsertManagedRuntime(rt ManagedRuntime) error {
 // GetManagedRuntime loads one runtime by ID.
 func (s *Store) GetManagedRuntime(id string) (*ManagedRuntime, error) {
 	row := s.db.QueryRow(
-		`SELECT id, root_workspace_id, active_workspace_id, active_session_id,
+		`SELECT id, project_path, root_workspace_id, active_workspace_id, active_session_id,
 		        source, launch_args_json, status, heartbeat_at, created_at, updated_at
 		   FROM managed_runtimes
 		  WHERE id = ?`,
@@ -113,7 +116,7 @@ func (s *Store) GetManagedRuntime(id string) (*ManagedRuntime, error) {
 // GetManagedRuntimeByRootWorkspace loads the runtime for a lineage root, if any.
 func (s *Store) GetManagedRuntimeByRootWorkspace(rootWorkspaceID string) (*ManagedRuntime, error) {
 	row := s.db.QueryRow(
-		`SELECT id, root_workspace_id, active_workspace_id, active_session_id,
+		`SELECT id, project_path, root_workspace_id, active_workspace_id, active_session_id,
 		        source, launch_args_json, status, heartbeat_at, created_at, updated_at
 		   FROM managed_runtimes
 		  WHERE root_workspace_id = ?
@@ -122,6 +125,32 @@ func (s *Store) GetManagedRuntimeByRootWorkspace(rootWorkspaceID string) (*Manag
 		rootWorkspaceID,
 	)
 	return scanManagedRuntime(row)
+}
+
+// ListManagedRuntimesByProjectPath loads runtimes for the same repo/project root.
+func (s *Store) ListManagedRuntimesByProjectPath(projectPath string) ([]ManagedRuntime, error) {
+	rows, err := s.db.Query(
+		`SELECT id, project_path, root_workspace_id, active_workspace_id, active_session_id,
+		        source, launch_args_json, status, heartbeat_at, created_at, updated_at
+		   FROM managed_runtimes
+		  WHERE project_path = ?
+		  ORDER BY updated_at DESC, created_at DESC`,
+		projectPath,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]ManagedRuntime, 0)
+	for rows.Next() {
+		rt, err := scanManagedRuntime(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *rt)
+	}
+	return result, rows.Err()
 }
 
 // GetManagedRuntimeForWorkspace resolves a workspace lineage to its live runtime record.
@@ -322,6 +351,7 @@ func scanManagedRuntime(scanner sessionSummaryScanner) (*ManagedRuntime, error) 
 	var heartbeatAt, createdAt, updatedAt string
 	if err := scanner.Scan(
 		&rt.ID,
+		&rt.ProjectPath,
 		&rt.RootWorkspaceID,
 		&rt.ActiveWorkspaceID,
 		&rt.ActiveSessionID,

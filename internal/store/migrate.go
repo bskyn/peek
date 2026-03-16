@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS branch_path_segments (
 
 CREATE TABLE IF NOT EXISTS managed_runtimes (
 	id TEXT PRIMARY KEY,
+	project_path TEXT NOT NULL DEFAULT '',
 	root_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
 	active_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
 	active_session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -97,6 +98,7 @@ CREATE TABLE IF NOT EXISTS managed_runtimes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_managed_runtimes_root ON managed_runtimes(root_workspace_id);
+CREATE INDEX IF NOT EXISTS idx_managed_runtimes_project ON managed_runtimes(project_path, updated_at);
 CREATE INDEX IF NOT EXISTS idx_managed_runtimes_status ON managed_runtimes(status);
 
 CREATE TABLE IF NOT EXISTS managed_runtime_requests (
@@ -138,6 +140,7 @@ CREATE TABLE IF NOT EXISTS companion_service_states (
 	service_name TEXT NOT NULL,
 	role TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'stopped',
+	pid INTEGER NOT NULL DEFAULT 0,
 	target_url TEXT NOT NULL DEFAULT '',
 	last_error TEXT NOT NULL DEFAULT '',
 	started_at TEXT NOT NULL DEFAULT '',
@@ -149,6 +152,43 @@ CREATE TABLE IF NOT EXISTS companion_service_states (
 
 CREATE INDEX IF NOT EXISTS idx_companion_service_states_runtime
 	ON companion_service_states(runtime_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS checkout_leases (
+	checkout_path TEXT PRIMARY KEY,
+	runtime_id TEXT NOT NULL REFERENCES managed_runtimes(id),
+	workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	claimed_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkout_leases_runtime
+	ON checkout_leases(runtime_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS detached_companion_runtimes (
+	runtime_id TEXT PRIMARY KEY REFERENCES managed_runtimes(id),
+	active_workspace_id TEXT NOT NULL DEFAULT '',
+	owner_session_id TEXT NOT NULL DEFAULT '',
+	config_source TEXT NOT NULL DEFAULT '',
+	phase TEXT NOT NULL DEFAULT 'idle',
+	message TEXT NOT NULL DEFAULT '',
+	browser_path_prefix TEXT NOT NULL DEFAULT '',
+	browser_target_url TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS port_leases (
+	runtime_id TEXT NOT NULL REFERENCES managed_runtimes(id),
+	service_name TEXT NOT NULL,
+	host TEXT NOT NULL DEFAULT '127.0.0.1',
+	port INTEGER NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (runtime_id, service_name),
+	UNIQUE(host, port)
+);
+
+CREATE INDEX IF NOT EXISTS idx_port_leases_runtime
+	ON port_leases(runtime_id, updated_at);
 `
 
 // migrations that add columns to existing tables. Each is idempotent —
@@ -156,6 +196,8 @@ CREATE INDEX IF NOT EXISTS idx_companion_service_states_runtime
 // which we silently ignore.
 var alterMigrations = []string{
 	`ALTER TABLE workspaces ADD COLUMN is_root INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE managed_runtimes ADD COLUMN project_path TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE companion_service_states ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
 }
 
 func migrate(db *sql.DB) error {

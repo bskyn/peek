@@ -11,6 +11,7 @@ type ViewerOptions struct {
 	OpenBrowser      bool
 	Port             int
 	InitialSessionID string
+	CurrentRuntimeID string
 }
 
 // NormalizeViewerOptions clamps invalid values and keeps the runtime contract small.
@@ -23,6 +24,12 @@ func NormalizeViewerOptions(opts ViewerOptions) ViewerOptions {
 
 // InitialPath returns the route opened in the browser.
 func (o ViewerOptions) InitialPath() string {
+	if o.CurrentRuntimeID != "" {
+		if o.InitialSessionID != "" {
+			return path.Join("/r", url.PathEscape(o.CurrentRuntimeID), "sessions", url.PathEscape(o.InitialSessionID))
+		}
+		return path.Join("/r", url.PathEscape(o.CurrentRuntimeID))
+	}
 	if o.InitialSessionID == "" {
 		return "/"
 	}

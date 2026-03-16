@@ -8,7 +8,7 @@ func TestBuildViewerOptions_DefaultsToEnabled(t *testing.T) {
 	openBrowser = true
 	webPort = 0
 
-	opts := buildViewerOptions("claude-test")
+	opts := buildViewerOptions("claude-test", "")
 	if !opts.Enabled {
 		t.Fatal("expected viewer to be enabled by default")
 	}
@@ -26,7 +26,7 @@ func TestBuildViewerOptions_NoWebDisablesViewer(t *testing.T) {
 	openBrowser = true
 	webPort = 4317
 
-	opts := buildViewerOptions("codex-test")
+	opts := buildViewerOptions("codex-test", "")
 	if opts.Enabled {
 		t.Fatal("expected --no-web to disable the viewer")
 	}

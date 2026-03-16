@@ -24,11 +24,12 @@ func addViewerFlags(cmd *cobra.Command) {
 	cmd.MarkFlagsMutuallyExclusive("web", "no-web")
 }
 
-func buildViewerOptions(initialSessionID string) viewer.ViewerOptions {
+func buildViewerOptions(initialSessionID, runtimeID string) viewer.ViewerOptions {
 	return viewer.NormalizeViewerOptions(viewer.ViewerOptions{
 		Enabled:          webEnabled && !noWeb,
 		OpenBrowser:      openBrowser,
 		Port:             webPort,
 		InitialSessionID: initialSessionID,
+		CurrentRuntimeID: runtimeID,
 	})
 }

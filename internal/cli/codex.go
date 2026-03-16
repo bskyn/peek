@@ -73,12 +73,12 @@ func runCodex(sessionID string, replay bool) error {
 		cancel()
 	}()
 
-	rt, err := viewer.Start(ctx, st, buildViewerOptions("codex-"+sf.SessionID), nil)
+	rt, err := viewer.Start(ctx, st, buildViewerOptions("codex-"+sf.SessionID, ""), nil)
 	if err != nil {
 		return fmt.Errorf("start viewer: %w", err)
 	}
 	if rt != nil {
-		fmt.Printf("Viewer: %s\n\n", rt.InitialURL(buildViewerOptions("codex-"+sf.SessionID)))
+		fmt.Printf("Viewer: %s\n\n", rt.InitialURL(buildViewerOptions("codex-"+sf.SessionID, "")))
 	}
 
 	rend := renderer.NewTerminalAuto()
@@ -132,7 +132,7 @@ func followCodexSessions(ctx context.Context, st *store.Store, rend *renderer.Te
 func tailCodexSession(ctx context.Context, st *store.Store, rend *renderer.TerminalRenderer, rt *viewer.Runtime, sf *codex.SessionFile, replay bool) error {
 	internalSessionID := "codex-" + sf.SessionID
 	if rt != nil {
-		rt.SetActiveSessionID(internalSessionID)
+		rt.SetActiveSessionID("", internalSessionID)
 	}
 
 	sess := sf.ToSession(internalSessionID)

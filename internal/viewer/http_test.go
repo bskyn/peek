@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -97,8 +98,14 @@ func TestHandleGetSessionEventsAnnotatesHistoricalUsage(t *testing.T) {
 }
 
 func TestHandleAppProxyRepointsStableURL(t *testing.T) {
-	runtime := &Runtime{broker: NewBroker()}
-	runtime.SetRuntimeStatus(companion.StatusSnapshot{
+	st, err := store.Open(t.TempDir() + "/viewer-proxy.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	runtime := &Runtime{broker: NewBroker(), targets: make(map[string]*url.URL)}
+	runtime.SetCurrentRuntimeID("rt-root")
+	runtime.SetRuntimeStatus("rt-root", companion.StatusSnapshot{
 		Enabled: true,
 		Browser: companion.BrowserSummary{PathPrefix: "/app/"},
 	})
@@ -115,10 +122,10 @@ func TestHandleAppProxyRepointsStableURL(t *testing.T) {
 		}, nil
 	}))
 
-	if err := runtime.SetProxyTarget("http://root.test"); err != nil {
+	if err := runtime.SetProxyTarget("rt-root", "http://root.test"); err != nil {
 		t.Fatalf("set first proxy target: %v", err)
 	}
-	handler := handleAppProxy(runtime)
+	handler := handleAppProxy(st, runtime, "rt-root")
 
 	firstReq := httptest.NewRequest("GET", "/app/", nil)
 	firstRec := httptest.NewRecorder()
@@ -130,7 +137,7 @@ func TestHandleAppProxyRepointsStableURL(t *testing.T) {
 		t.Fatalf("unexpected first proxy body: %q", body)
 	}
 
-	if err := runtime.SetProxyTarget("http://child.test"); err != nil {
+	if err := runtime.SetProxyTarget("rt-root", "http://child.test"); err != nil {
 		t.Fatalf("set second proxy target: %v", err)
 	}
 	secondReq := httptest.NewRequest("GET", "/app/", nil)

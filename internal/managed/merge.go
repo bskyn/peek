@@ -163,9 +163,9 @@ func parseConflictFiles(worktreeDir string) []string {
 	return files
 }
 
-// captureWorktreeAsRef creates a hidden ref from the current worktree state.
+// CaptureWorktreeAsRef creates a hidden ref from the current worktree state.
 // Uses a temporary GIT_INDEX_FILE so the user's real index is never modified.
-func captureWorktreeAsRef(worktreeDir, workspaceID, repoDir string) (string, error) {
+func CaptureWorktreeAsRef(worktreeDir, workspaceID, repoDir, refSuffix string) (string, error) {
 	// Write tree using temporary index (never touches the real index)
 	treeHash, err := writeTreeFromWorktree(worktreeDir)
 	if err != nil {
@@ -192,7 +192,10 @@ func captureWorktreeAsRef(worktreeDir, workspaceID, repoDir string) (string, err
 	commitHash := strings.TrimSpace(string(commitOut))
 
 	// Store as hidden ref
-	ref := fmt.Sprintf("refs/peek/%s/cool", workspaceID)
+	if refSuffix == "" {
+		refSuffix = "live"
+	}
+	ref := fmt.Sprintf("refs/peek/%s/%s", workspaceID, refSuffix)
 	cmd = exec.Command("git", "update-ref", ref, commitHash)
 	cmd.Dir = repoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -200,4 +203,8 @@ func captureWorktreeAsRef(worktreeDir, workspaceID, repoDir string) (string, err
 	}
 
 	return ref, nil
+}
+
+func captureWorktreeAsRef(worktreeDir, workspaceID, repoDir string) (string, error) {
+	return CaptureWorktreeAsRef(worktreeDir, workspaceID, repoDir, "cool")
 }
