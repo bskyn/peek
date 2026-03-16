@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,7 +28,17 @@ type managedStartState struct {
 	isolatedRoot      bool
 }
 
+type managedStartLock struct {
+	file *os.File
+}
+
 func prepareManagedStart(st *store.Store, orch *managed.Orchestrator, source managed.Source, projectPath, requestedRuntimeID string, launchArgs []string) (*managedStartState, error) {
+	lock, err := acquireManagedStartLock(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
+
 	now := time.Now().UTC()
 	if requestedRuntimeID != "" {
 		return prepareExplicitManagedStart(st, orch, source, projectPath, requestedRuntimeID, launchArgs, now)
@@ -49,6 +62,35 @@ func prepareManagedStart(st *store.Store, orch *managed.Orchestrator, source man
 	}
 
 	return createPrimaryManagedStart(st, source, projectPath, launchArgs, now)
+}
+
+func acquireManagedStartLock(projectPath string) (*managedStartLock, error) {
+	sum := sha256.Sum256([]byte(projectPath))
+	lockDir := filepath.Join(managedWorktreeBase(), "locks")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create managed-start lock dir: %w", err)
+	}
+	lockPath := filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open managed-start lock %s: %w", lockPath, err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock managed-start %s: %w", lockPath, err)
+	}
+	return &managedStartLock{file: file}, nil
+}
+
+func (l *managedStartLock) Close() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil {
+		_ = l.file.Close()
+		return err
+	}
+	return l.file.Close()
 }
 
 func prepareExplicitManagedStart(st *store.Store, orch *managed.Orchestrator, source managed.Source, projectPath, requestedRuntimeID string, launchArgs []string, now time.Time) (*managedStartState, error) {
@@ -105,7 +147,7 @@ func createPrimaryManagedStart(st *store.Store, source managed.Source, projectPa
 		ActiveSessionID:   sessID,
 		Source:            string(source),
 		LaunchArgs:        append([]string(nil), launchArgs...),
-		Status:            store.ManagedRuntimeStopped,
+		Status:            store.ManagedRuntimeRunning,
 		HeartbeatAt:       now,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -155,7 +197,7 @@ func reattachManagedStart(st *store.Store, orch *managed.Orchestrator, runtime *
 		ActiveSessionID:   sessID,
 		Source:            runtime.Source,
 		LaunchArgs:        append([]string(nil), launchArgs...),
-		Status:            store.ManagedRuntimeStopped,
+		Status:            store.ManagedRuntimeRunning,
 		HeartbeatAt:       now,
 		CreatedAt:         runtime.CreatedAt,
 		UpdatedAt:         now,
@@ -214,7 +256,7 @@ func createIsolatedManagedStart(st *store.Store, source managed.Source, projectP
 		ActiveSessionID:   sessID,
 		Source:            string(source),
 		LaunchArgs:        append([]string(nil), launchArgs...),
-		Status:            store.ManagedRuntimeStopped,
+		Status:            store.ManagedRuntimeRunning,
 		HeartbeatAt:       now,
 		CreatedAt:         now,
 		UpdatedAt:         now,

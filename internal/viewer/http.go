@@ -363,6 +363,10 @@ func runtimeStatusFromStore(st *store.Store, runtimeID string) (companion.Status
 	if err != nil {
 		return companion.StatusSnapshot{}, "", err
 	}
+	bootstrap, err := bootstrapSummaryForWorkspace(st, detached.ActiveWorkspaceID)
+	if err != nil {
+		return companion.StatusSnapshot{}, "", err
+	}
 
 	summaries := make([]companion.ServiceSummary, 0, len(services))
 	for _, service := range services {
@@ -381,17 +385,33 @@ func runtimeStatusFromStore(st *store.Store, runtimeID string) (companion.Status
 		ActiveWorkspaceID: detached.ActiveWorkspaceID,
 		Phase:             companion.ActivationPhase(detached.Phase),
 		Message:           detached.Message,
-		Bootstrap: companion.BootstrapSummary{
-			Status: store.BootstrapSucceeded,
-			Reused: true,
-		},
-		Services: summaries,
+		Bootstrap:         bootstrap,
+		Services:          summaries,
 		Browser: companion.BrowserSummary{
 			PathPrefix: detached.BrowserPathPrefix,
 			TargetURL:  detached.BrowserTargetURL,
 		},
 		UpdatedAt: detached.UpdatedAt,
 	}, runtime.ActiveSessionID, nil
+}
+
+func bootstrapSummaryForWorkspace(st *store.Store, workspaceID string) (companion.BootstrapSummary, error) {
+	summary := companion.BootstrapSummary{Status: store.BootstrapPending}
+	if workspaceID == "" {
+		return summary, nil
+	}
+	state, err := st.GetWorkspaceBootstrapState(workspaceID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return summary, nil
+		}
+		return companion.BootstrapSummary{}, err
+	}
+	return companion.BootstrapSummary{
+		Status:      state.Status,
+		Fingerprint: state.Fingerprint,
+		LastError:   state.LastError,
+	}, nil
 }
 
 func enqueueRuntimeSwitchRequest(st *store.Store, runtimeID, workspaceID string) (*store.ManagedRuntimeRequest, error) {

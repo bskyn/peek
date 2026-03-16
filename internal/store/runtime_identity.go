@@ -174,6 +174,16 @@ func (s *Store) GetPortLease(runtimeID, serviceName string) (*PortLease, error) 
 	return &lease, nil
 }
 
+func (s *Store) DeletePortLease(runtimeID, serviceName string) error {
+	_, err := s.db.Exec(
+		`DELETE FROM port_leases
+		  WHERE runtime_id = ? AND service_name = ?`,
+		runtimeID,
+		serviceName,
+	)
+	return err
+}
+
 func (s *Store) ListPortLeases() ([]PortLease, error) {
 	rows, err := s.db.Query(
 		`SELECT runtime_id, service_name, host, port, created_at, updated_at

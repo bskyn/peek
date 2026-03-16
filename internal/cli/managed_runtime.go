@@ -50,6 +50,7 @@ type managedSupervisor struct {
 	orch              *managed.Orchestrator
 	source            managed.Source
 	baseArgs          []string
+	projectPath       string
 	runtimeID         string
 	rootWorkspaceID   string
 	activeWorkspaceID string
@@ -65,6 +66,7 @@ func newManagedSupervisor(st *store.Store, rt *viewer.Runtime, orch *managed.Orc
 		orch:              orch,
 		source:            source,
 		baseArgs:          append([]string(nil), baseArgs...),
+		projectPath:       projectDir,
 		runtimeID:         runtimeID,
 		rootWorkspaceID:   rootWorkspaceID,
 		activeWorkspaceID: activeWorkspaceID,
@@ -99,6 +101,7 @@ func (s *managedSupervisor) Run(ctx context.Context) error {
 	now := time.Now().UTC()
 	if err := s.st.UpsertManagedRuntime(store.ManagedRuntime{
 		ID:                s.runtimeID,
+		ProjectPath:       s.projectPath,
 		RootWorkspaceID:   s.rootWorkspaceID,
 		ActiveWorkspaceID: s.activeWorkspaceID,
 		ActiveSessionID:   s.activeSessionID,

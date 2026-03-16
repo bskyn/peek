@@ -78,7 +78,10 @@ func (s *Store) UpsertManagedRuntime(rt ManagedRuntime) error {
 			source, launch_args_json, status, heartbeat_at, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			project_path = excluded.project_path,
+			project_path = CASE
+				WHEN excluded.project_path != '' THEN excluded.project_path
+				ELSE managed_runtimes.project_path
+			END,
 			active_workspace_id = excluded.active_workspace_id,
 			active_session_id = excluded.active_session_id,
 			source = excluded.source,

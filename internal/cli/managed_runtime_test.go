@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -347,6 +348,66 @@ func TestManagedSupervisorPropagatesProviderExitCode(t *testing.T) {
 	}
 }
 
+func TestManagedSupervisorPreservesRuntimeProjectPath(t *testing.T) {
+	repoDir := testManagedRepo(t)
+	st := openManagedStore(t)
+	now := time.Now().UTC()
+
+	if err := st.CreateSession(event.Session{ID: "s-root", Source: "claude", ProjectPath: repoDir, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkspace(workspace.Workspace{
+		ID: "ws-root", Status: workspace.StatusActive, ProjectPath: repoDir, WorktreePath: repoDir, IsRoot: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveBranchPath(workspace.BranchPathSegment{WorkspaceID: "ws-root", Depth: 0, Ordinal: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertManagedRuntime(store.ManagedRuntime{
+		ID:                "rt-root",
+		ProjectPath:       repoDir,
+		RootWorkspaceID:   "ws-root",
+		ActiveWorkspaceID: "ws-root",
+		ActiveSessionID:   "s-root",
+		Source:            "claude",
+		Status:            store.ManagedRuntimeStopped,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	supervisor := newManagedSupervisor(
+		st,
+		nil,
+		managed.NewOrchestrator(st, repoDir, filepath.Join(t.TempDir(), "worktrees")),
+		managed.SourceClaude,
+		nil,
+		"rt-root",
+		"ws-root",
+		"ws-root",
+		"s-root",
+		repoDir,
+		nil,
+		managedLaunchConfig{command: writeExitStub(t, 17)},
+	)
+
+	err := supervisor.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected exit error")
+	}
+
+	rt, err := st.GetManagedRuntime("rt-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.ProjectPath != repoDir {
+		t.Fatalf("expected runtime project path %s, got %s", repoDir, rt.ProjectPath)
+	}
+}
+
 func TestPrepareManagedStartReattachesStoppedLeaseOwner(t *testing.T) {
 	repoDir := testManagedRepo(t)
 	st := openManagedStore(t)
@@ -534,6 +595,109 @@ func TestPrepareManagedStartIsolatesRootOnContention(t *testing.T) {
 	}
 	if string(data) != "# changed in root checkout\n" {
 		t.Fatalf("expected isolated runtime to inherit current checkout state, got %q", string(data))
+	}
+}
+
+func TestPrepareManagedStartSerializesStoppedLeaseOwnerReattach(t *testing.T) {
+	repoDir := testManagedRepo(t)
+	st := openManagedStore(t)
+	now := time.Now().UTC()
+
+	if err := st.CreateSession(event.Session{
+		ID:          "s-root",
+		Source:      "claude",
+		ProjectPath: repoDir,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkspace(workspace.Workspace{
+		ID:           "ws-root",
+		Status:       workspace.StatusFrozen,
+		ProjectPath:  repoDir,
+		WorktreePath: repoDir,
+		IsRoot:       true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkWorkspaceSession(workspace.WorkspaceSession{
+		WorkspaceID: "ws-root",
+		SessionID:   "s-root",
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveBranchPath(workspace.BranchPathSegment{WorkspaceID: "ws-root", Depth: 0, Ordinal: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertManagedRuntime(store.ManagedRuntime{
+		ID:                "rt-root",
+		ProjectPath:       repoDir,
+		RootWorkspaceID:   "ws-root",
+		ActiveWorkspaceID: "ws-root",
+		ActiveSessionID:   "s-root",
+		Source:            "claude",
+		Status:            store.ManagedRuntimeStopped,
+		HeartbeatAt:       now.Add(-10 * time.Second),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertCheckoutLease(store.CheckoutLease{
+		CheckoutPath: repoDir,
+		RuntimeID:    "rt-root",
+		WorkspaceID:  "ws-root",
+		ClaimedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	orch := managed.NewOrchestrator(st, repoDir, filepath.Join(t.TempDir(), "worktrees"))
+	type startResult struct {
+		start *managedStartState
+		err   error
+	}
+	results := make([]startResult, 2)
+	startGate := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-startGate
+			start, err := prepareManagedStart(st, orch, managed.SourceClaude, repoDir, "", nil)
+			results[index] = startResult{start: start, err: err}
+		}(i)
+	}
+	close(startGate)
+	wg.Wait()
+
+	var reusedCount int
+	var isolatedCount int
+	for _, result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.start.reusedRuntime {
+			reusedCount++
+			if result.start.runtimeID != "rt-root" {
+				t.Fatalf("expected reused runtime rt-root, got %s", result.start.runtimeID)
+			}
+		}
+		if result.start.isolatedRoot {
+			isolatedCount++
+		}
+	}
+	if reusedCount != 1 {
+		t.Fatalf("expected exactly one reattach, got %d", reusedCount)
+	}
+	if isolatedCount != 1 {
+		t.Fatalf("expected exactly one isolated runtime, got %d", isolatedCount)
 	}
 }
 

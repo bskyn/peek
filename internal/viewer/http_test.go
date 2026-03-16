@@ -13,6 +13,7 @@ import (
 	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/store"
+	"github.com/bskyn/peek/internal/workspace"
 )
 
 func TestHandleGetSessionEventsAnnotatesHistoricalUsage(t *testing.T) {
@@ -148,6 +149,83 @@ func TestHandleAppProxyRepointsStableURL(t *testing.T) {
 	}
 	if body := secondRec.Body.String(); body != "child workspace" {
 		t.Fatalf("unexpected second proxy body: %q", body)
+	}
+}
+
+func TestRuntimeStatusFromStoreUsesBootstrapState(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/viewer-status.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := time.Now().UTC()
+	if err := st.CreateSession(event.Session{
+		ID:        "s-root",
+		Source:    "claude",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := st.CreateWorkspace(workspace.Workspace{
+		ID:        "ws-root",
+		Status:    workspace.StatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := st.UpsertManagedRuntime(store.ManagedRuntime{
+		ID:                "rt-root",
+		ProjectPath:       "/repo",
+		RootWorkspaceID:   "ws-root",
+		ActiveWorkspaceID: "ws-root",
+		ActiveSessionID:   "s-root",
+		Source:            "claude",
+		Status:            store.ManagedRuntimeRunning,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("upsert managed runtime: %v", err)
+	}
+	if err := st.UpsertDetachedCompanionRuntime(store.DetachedCompanionRuntime{
+		RuntimeID:         "rt-root",
+		ActiveWorkspaceID: "ws-root",
+		ConfigSource:      "peek.runtime.json",
+		Phase:             string(companion.ActivationFailed),
+		Message:           "bootstrap failed",
+		BrowserPathPrefix: "/app/",
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("upsert detached runtime: %v", err)
+	}
+	if err := st.UpsertWorkspaceBootstrapState(store.WorkspaceBootstrapState{
+		WorkspaceID: "ws-root",
+		Fingerprint: "fp-1",
+		Status:      store.BootstrapFailed,
+		LastError:   "install failed",
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("upsert bootstrap state: %v", err)
+	}
+
+	status, activeSessionID, err := runtimeStatusFromStore(st, "rt-root")
+	if err != nil {
+		t.Fatalf("runtime status from store: %v", err)
+	}
+	if activeSessionID != "s-root" {
+		t.Fatalf("expected active session s-root, got %s", activeSessionID)
+	}
+	if status.Bootstrap.Status != store.BootstrapFailed {
+		t.Fatalf("expected failed bootstrap status, got %s", status.Bootstrap.Status)
+	}
+	if status.Bootstrap.Fingerprint != "fp-1" {
+		t.Fatalf("expected fingerprint fp-1, got %s", status.Bootstrap.Fingerprint)
+	}
+	if status.Bootstrap.LastError != "install failed" {
+		t.Fatalf("expected bootstrap error to round-trip, got %q", status.Bootstrap.LastError)
 	}
 }
 

@@ -765,7 +765,12 @@ func (m *Manager) resolveServiceSpec(service CompanionServiceSpec) (resolvedServ
 
 func (m *Manager) ensurePortLease(serviceName string) (*store.PortLease, error) {
 	if lease, err := m.st.GetPortLease(m.runtimeID, serviceName); err == nil {
-		return lease, nil
+		if portAppearsAvailable(lease.Host, lease.Port) {
+			return lease, nil
+		}
+		if err := m.st.DeletePortLease(m.runtimeID, serviceName); err != nil {
+			return nil, fmt.Errorf("release stale port lease for %s: %w", serviceName, err)
+		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
@@ -878,7 +883,7 @@ func stopPID(ctx context.Context, pid int) error {
 	if pid <= 0 {
 		return nil
 	}
-	_ = syscall.Kill(pid, syscall.SIGINT)
+	_ = signalProcessGroupOrProcess(pid, syscall.SIGINT)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -887,9 +892,19 @@ func stopPID(ctx context.Context, pid int) error {
 		}
 		select {
 		case <-ctx.Done():
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_ = signalProcessGroupOrProcess(pid, syscall.SIGKILL)
 			return nil
 		case <-ticker.C:
 		}
 	}
+}
+
+func signalProcessGroupOrProcess(pid int, sig syscall.Signal) error {
+	if pid <= 0 {
+		return nil
+	}
+	if err := syscall.Kill(-pid, sig); err == nil || errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return syscall.Kill(pid, sig)
 }
