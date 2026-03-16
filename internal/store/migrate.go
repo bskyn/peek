@@ -98,7 +98,6 @@ CREATE TABLE IF NOT EXISTS managed_runtimes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_managed_runtimes_root ON managed_runtimes(root_workspace_id);
-CREATE INDEX IF NOT EXISTS idx_managed_runtimes_project ON managed_runtimes(project_path, updated_at);
 CREATE INDEX IF NOT EXISTS idx_managed_runtimes_status ON managed_runtimes(status);
 
 CREATE TABLE IF NOT EXISTS managed_runtime_requests (
@@ -195,21 +194,59 @@ CREATE INDEX IF NOT EXISTS idx_port_leases_runtime
 // SQLite returns "duplicate column name" if the column already exists,
 // which we silently ignore.
 var alterMigrations = []string{
+	`ALTER TABLE sessions ADD COLUMN project_path TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workspaces ADD COLUMN project_path TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE workspaces ADD COLUMN is_root INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE managed_runtimes ADD COLUMN project_path TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE companion_service_states ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
 }
 
+var postAlterMigrations = []string{
+	`UPDATE managed_runtimes
+	    SET project_path = COALESCE(
+	    	NULLIF((
+	    		SELECT project_path
+	    		  FROM workspaces
+	    		 WHERE id = managed_runtimes.root_workspace_id
+	    	), ''),
+	    	NULLIF((
+	    		SELECT project_path
+	    		  FROM workspaces
+	    		 WHERE id = managed_runtimes.active_workspace_id
+	    	), ''),
+	    	project_path
+	    )
+	  WHERE project_path = ''`,
+	`CREATE INDEX IF NOT EXISTS idx_managed_runtimes_project ON managed_runtimes(project_path, updated_at)`,
+}
+
 func migrate(db *sql.DB) error {
+	if err := applyAlterMigrations(db, true); err != nil {
+		return err
+	}
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
+	if err := applyAlterMigrations(db, false); err != nil {
+		return err
+	}
+	for _, stmt := range postAlterMigrations {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyAlterMigrations(db *sql.DB, ignoreMissingTable bool) error {
 	for _, stmt := range alterMigrations {
 		if _, err := db.Exec(stmt); err != nil {
-			// Ignore "duplicate column name" — means migration already applied
-			if !isDuplicateColumn(err) {
-				return err
+			// Ignore duplicate columns on repeat runs and missing tables during the
+			// pre-schema pass, where older installs may not have every table yet.
+			if isDuplicateColumn(err) || (ignoreMissingTable && isMissingTable(err)) {
+				continue
 			}
+			return err
 		}
 	}
 	return nil
@@ -217,4 +254,8 @@ func migrate(db *sql.DB) error {
 
 func isDuplicateColumn(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "duplicate column")
+}
+
+func isMissingTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
 }

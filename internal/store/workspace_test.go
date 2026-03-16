@@ -858,6 +858,106 @@ func TestDeleteWorkspaceRehomesStoppedManagedRuntimeReference(t *testing.T) {
 	}
 }
 
+func TestMigrationRepairsLegacyManagedRuntimeProjectPath(t *testing.T) {
+	dbPath := t.TempDir() + "/legacy.db"
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY,
+	source TEXT NOT NULL,
+	project_path TEXT NOT NULL DEFAULT '',
+	source_session_id TEXT NOT NULL DEFAULT '',
+	parent_session_id TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE workspaces (
+	id TEXT PRIMARY KEY,
+	parent_workspace_id TEXT REFERENCES workspaces(id),
+	status TEXT NOT NULL DEFAULT 'active',
+	project_path TEXT NOT NULL DEFAULT '',
+	worktree_path TEXT NOT NULL DEFAULT '',
+	git_ref TEXT NOT NULL DEFAULT '',
+	branch_from_seq INTEGER,
+	sibling_ordinal INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE managed_runtimes (
+	id TEXT PRIMARY KEY,
+	root_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	active_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	active_session_id TEXT NOT NULL REFERENCES sessions(id),
+	source TEXT NOT NULL DEFAULT '',
+	launch_args_json TEXT NOT NULL DEFAULT '[]',
+	status TEXT NOT NULL DEFAULT 'running',
+	heartbeat_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+INSERT INTO sessions (id, source, project_path, source_session_id, parent_session_id, created_at, updated_at)
+VALUES ('s-1', 'codex', '/test', '', NULL, '2026-03-15T00:00:00Z', '2026-03-15T00:00:00Z');
+
+INSERT INTO workspaces (id, parent_workspace_id, status, project_path, worktree_path, git_ref, branch_from_seq, sibling_ordinal, created_at, updated_at)
+VALUES ('ws-1', NULL, 'active', '/test', '/test', '', NULL, 0, '2026-03-15T00:00:00Z', '2026-03-15T00:00:00Z');
+
+INSERT INTO managed_runtimes (id, root_workspace_id, active_workspace_id, active_session_id, source, launch_args_json, status, heartbeat_at, created_at, updated_at)
+VALUES ('rt-1', 'ws-1', 'ws-1', 's-1', 'codex', '[]', 'running', '2026-03-15T00:00:00Z', '2026-03-15T00:00:00Z', '2026-03-15T00:00:00Z');
+`); err != nil {
+		db.Close()
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	rt, err := s.GetManagedRuntime("rt-1")
+	if err != nil {
+		t.Fatalf("get managed runtime after migration: %v", err)
+	}
+	if rt.ProjectPath != "/test" {
+		t.Fatalf("expected migrated runtime project path, got %q", rt.ProjectPath)
+	}
+
+	if err := s.UpsertManagedRuntime(ManagedRuntime{
+		ID:                "rt-1",
+		ProjectPath:       "/test",
+		RootWorkspaceID:   "ws-1",
+		ActiveWorkspaceID: "ws-1",
+		ActiveSessionID:   "s-1",
+		Source:            "codex",
+		Status:            ManagedRuntimeRunning,
+		HeartbeatAt:       now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("upsert managed runtime after migration: %v", err)
+	}
+
+	var indexName string
+	if err := s.db.QueryRow(`
+SELECT name
+  FROM sqlite_master
+ WHERE type = 'index' AND name = 'idx_managed_runtimes_project'
+`).Scan(&indexName); err != nil {
+		t.Fatalf("lookup managed runtime project index: %v", err)
+	}
+}
+
 func TestMigrationIdempotency(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 

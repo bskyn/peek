@@ -15,7 +15,7 @@ changes.
 
 **Hard constraint:** Reviewers MUST run via the opposite model's CLI (`codex exec` or
 `claude -p`). Do NOT use subagents, the Agent tool, or any internal delegation mechanism as
-reviewers — those run on *your own* model, which defeats the purpose.
+reviewers — those run on _your own_ model, which defeats the purpose.
 
 ## Step 1 — Load Principles
 
@@ -27,16 +27,16 @@ These govern reviewer judgments.
 Identify what to review from context (recent diffs, referenced plans, user message).
 
 Determine the **intent** — what the author is trying to achieve. This is critical: reviewers
-challenge whether the work *achieves the intent well*, not whether the intent is correct.
+challenge whether the work _achieves the intent well_, not whether the intent is correct.
 State the intent explicitly before proceeding.
 
 Assess change size:
 
-| Size | Threshold | Reviewers |
-|------|-----------|-----------|
-| Small | < 50 lines, 1–2 files | 1 (Skeptic) |
-| Medium | 50–200 lines, 3–5 files | 2 (Skeptic + Architect) |
-| Large | 200+ lines or 5+ files | 3 (Skeptic + Architect + Minimalist) |
+| Size   | Threshold               | Reviewers                            |
+| ------ | ----------------------- | ------------------------------------ |
+| Small  | < 50 lines, 1–2 files   | 1 (Skeptic)                          |
+| Medium | 50–200 lines, 3–5 files | 2 (Skeptic + Architect)              |
+| Large  | 200+ lines or 5+ files  | 3 (Skeptic + Architect + Minimalist) |
 
 Read `references/reviewer-lenses.md` for lens definitions.
 
@@ -60,6 +60,8 @@ Use `--profile edit` only if the reviewer needs to run tests. Default to read-on
 Run with `run_in_background: true`, monitor via `TaskOutput` with `block: true, timeout: 600000`.
 
 **If you are Codex** → spawn Claude reviewers via `claude` CLI:
+
+Make sure to run to first run `claude auth login` to authenticate the CLI (user needs to auth via web).
 
 ```sh
 claude -p "prompt" > "$REVIEW_DIR/skeptic.md" 2>/dev/null
@@ -120,6 +122,7 @@ For each finding:
 ```
 
 **Verdict logic:**
+
 - **PASS** — no high-severity findings
 - **CONTESTED** — high-severity findings but reviewers disagree on them
 - **REJECT** — high-severity findings with reviewer consensus
