@@ -53,9 +53,10 @@ type SessionDetail struct {
 
 // EventPage is a paginated event response.
 type EventPage struct {
-	Events       []event.Event `json:"events"`
-	HasMore      bool          `json:"has_more"`
-	NextAfterSeq int64         `json:"next_after_seq,omitempty"`
+	Events        []event.Event `json:"events"`
+	HasMore       bool          `json:"has_more"`
+	NextAfterSeq  int64         `json:"next_after_seq,omitempty"`
+	NextBeforeSeq int64         `json:"next_before_seq,omitempty"`
 }
 
 // Open opens or creates a SQLite database at the given path.

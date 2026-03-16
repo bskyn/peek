@@ -204,9 +204,27 @@ func handleGetSessionEvents(st *store.Store) http.HandlerFunc {
 			writeAPIError(w, http.StatusBadRequest, "invalid after_seq")
 			return
 		}
+		beforeSeq, err := parseOptionalInt64(r.URL.Query().Get("before_seq"), -1)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid before_seq")
+			return
+		}
 		limit, err := parseOptionalInt(r.URL.Query().Get("limit"), 200)
 		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		tail, err := parseOptionalBool(r.URL.Query().Get("tail"), false)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid tail")
+			return
+		}
+		if afterSeq >= 0 && (beforeSeq >= 0 || tail) {
+			writeAPIError(w, http.StatusBadRequest, "after_seq cannot be combined with before_seq or tail")
+			return
+		}
+		if beforeSeq >= 0 && tail {
+			writeAPIError(w, http.StatusBadRequest, "before_seq cannot be combined with tail")
 			return
 		}
 
@@ -217,14 +235,17 @@ func handleGetSessionEvents(st *store.Store) http.HandlerFunc {
 		}
 		annotator := usage.NewAnnotator()
 		events = annotator.Annotate(events)
-		page := paginateEvents(events, afterSeq, limit)
+		page := paginateEvents(events, afterSeq, beforeSeq, limit, tail)
 		writeJSON(w, http.StatusOK, page)
 	}
 }
 
-func paginateEvents(events []event.Event, afterSeq int64, limit int) store.EventPage {
+func paginateEvents(events []event.Event, afterSeq, beforeSeq int64, limit int, tail bool) store.EventPage {
 	if limit <= 0 {
 		limit = 200
+	}
+	if beforeSeq >= 0 || tail {
+		return paginateEventsBefore(events, beforeSeq, limit, tail)
 	}
 
 	filtered := make([]event.Event, 0, limit)
@@ -251,6 +272,45 @@ func paginateEvents(events []event.Event, afterSeq int64, limit int) store.Event
 	}
 }
 
+func paginateEventsBefore(events []event.Event, beforeSeq int64, limit int, tail bool) store.EventPage {
+	filtered := make([]event.Event, 0, limit)
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if !tail && beforeSeq >= 0 && ev.Seq >= beforeSeq {
+			continue
+		}
+		filtered = append(filtered, ev)
+		if len(filtered) == limit {
+			break
+		}
+	}
+	if len(filtered) == 0 {
+		return store.EventPage{Events: []event.Event{}, HasMore: false}
+	}
+
+	for left, right := 0, len(filtered)-1; left < right; left, right = left+1, right-1 {
+		filtered[left], filtered[right] = filtered[right], filtered[left]
+	}
+
+	firstSeq := filtered[0].Seq
+	hasMore := false
+	for _, ev := range events {
+		if ev.Seq < firstSeq {
+			hasMore = true
+			break
+		}
+	}
+
+	page := store.EventPage{
+		Events:  filtered,
+		HasMore: hasMore,
+	}
+	if hasMore {
+		page.NextBeforeSeq = firstSeq
+	}
+	return page
+}
+
 func parseOptionalInt(raw string, fallback int) (int, error) {
 	if raw == "" {
 		return fallback, nil
@@ -269,6 +329,17 @@ func parseOptionalInt64(raw string, fallback int64) (int64, error) {
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return 0, err
+	}
+	return value, nil
+}
+
+func parseOptionalBool(raw string, fallback bool) (bool, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, err
 	}
 	return value, nil
 }

@@ -84,6 +84,8 @@ export function App() {
     setTimelineSort,
     timelineRef,
     hasMore,
+    isLoadingOlder,
+    loadOlder,
     totalCount,
   } = useSessionDetail(selectedSessionID);
 
@@ -384,7 +386,7 @@ export function App() {
                 <div className="flex items-center gap-3">
                   <h2 className="text-[13px] font-semibold text-text">Timeline</h2>
                   <span className="text-[11px] tabular-nums text-overlay-0">
-                    {hasMore
+                    {hasMore || displayedEvents.length < totalCount
                       ? `${displayedEvents.length} of ${totalCount} events`
                       : `${detail.session.event_count} events`}
                   </span>
@@ -411,6 +413,18 @@ export function App() {
                 ref={timelineRef}
                 className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-auto pr-1"
               >
+                {hasMore ? (
+                  <div className="sticky top-0 z-10 flex justify-center pb-1 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => void loadOlder()}
+                      disabled={isLoadingOlder}
+                      className="rounded-full border border-surface-0 bg-mantle px-3 py-1 text-[10px] font-medium text-subtext-0 disabled:opacity-60"
+                    >
+                      {isLoadingOlder ? 'Loading earlier events...' : 'Load earlier events'}
+                    </button>
+                  </div>
+                ) : null}
                 {displayedEvents.length === 0 ? (
                   <EmptyPanel
                     title="No events yet"

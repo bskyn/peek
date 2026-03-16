@@ -24,31 +24,38 @@ export async function fetchSessionDetail(sessionID: string): Promise<SessionDeta
   return normalizeSessionDetail(payload);
 }
 
-export async function fetchSessionEvents(sessionID: string): Promise<EventPage> {
+export async function fetchSessionEvents(
+  sessionID: string,
+  options?: { beforeSeq?: number; limit?: number; tail?: boolean },
+): Promise<EventPage> {
   const encoded = encodeURIComponent(sessionID);
-  const allEvents: EventPage['events'] = [];
-  let afterSeq = -1;
-
-  while (true) {
-    const payload = (await requestJSON(
-      `/api/sessions/${encoded}/events?limit=500&after_seq=${afterSeq}`,
-    )) as {
-      events?: unknown;
-      has_more?: unknown;
-      next_after_seq?: unknown;
-    };
-    const pageEvents = Array.isArray(payload.events)
-      ? payload.events.map(normalizeViewerEvent).filter((entry): entry is EventPage['events'][number] => entry != null)
-      : [];
-    const hasMore = payload.has_more === true;
-    const nextAfterSeq =
-      typeof payload.next_after_seq === 'number' ? payload.next_after_seq : undefined;
-    allEvents.push(...pageEvents);
-    if (!hasMore) {
-      return { events: allEvents, has_more: false, next_after_seq: nextAfterSeq };
-    }
-    afterSeq = nextAfterSeq ?? afterSeq;
+  const params = new URLSearchParams();
+  params.set('limit', String(options?.limit ?? 200));
+  if (options?.beforeSeq != null) {
+    params.set('before_seq', String(options.beforeSeq));
   }
+  if (options?.tail === true) {
+    params.set('tail', 'true');
+  }
+
+  const payload = (await requestJSON(`/api/sessions/${encoded}/events?${params.toString()}`)) as {
+    events?: unknown;
+    has_more?: unknown;
+    next_after_seq?: unknown;
+    next_before_seq?: unknown;
+  };
+  const pageEvents = Array.isArray(payload.events)
+    ? payload.events
+        .map(normalizeViewerEvent)
+        .filter((entry): entry is EventPage['events'][number] => entry != null)
+    : [];
+  return {
+    events: pageEvents,
+    has_more: payload.has_more === true,
+    next_after_seq: typeof payload.next_after_seq === 'number' ? payload.next_after_seq : undefined,
+    next_before_seq:
+      typeof payload.next_before_seq === 'number' ? payload.next_before_seq : undefined,
+  };
 }
 
 export async function fetchViewerStatus(runtimeID?: string): Promise<ViewerStatus> {

@@ -38,6 +38,7 @@ export type EventPage = {
   events: ViewerEvent[];
   has_more: boolean;
   next_after_seq?: number;
+  next_before_seq?: number;
 };
 
 export type LiveEnvelope =

@@ -99,6 +99,79 @@ func TestHandleGetSessionEventsAnnotatesHistoricalUsage(t *testing.T) {
 	}
 }
 
+func TestHandleGetSessionEventsTailPagination(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/viewer-tail.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := time.Date(2026, 3, 10, 7, 30, 0, 0, time.UTC)
+	if err := st.CreateSession(event.Session{
+		ID:        "tail-test",
+		Source:    "codex",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	events := []event.Event{
+		{ID: "e0", SessionID: "tail-test", Timestamp: now, Seq: 0, Type: event.EventAssistantMessage, PayloadJSON: json.RawMessage(`{"text":"0"}`)},
+		{ID: "e1", SessionID: "tail-test", Timestamp: now.Add(time.Second), Seq: 1, Type: event.EventAssistantMessage, PayloadJSON: json.RawMessage(`{"text":"1"}`)},
+		{ID: "e2", SessionID: "tail-test", Timestamp: now.Add(2 * time.Second), Seq: 2, Type: event.EventAssistantMessage, PayloadJSON: json.RawMessage(`{"text":"2"}`)},
+		{ID: "e3", SessionID: "tail-test", Timestamp: now.Add(3 * time.Second), Seq: 3, Type: event.EventAssistantMessage, PayloadJSON: json.RawMessage(`{"text":"3"}`)},
+		{ID: "e4", SessionID: "tail-test", Timestamp: now.Add(4 * time.Second), Seq: 4, Type: event.EventAssistantMessage, PayloadJSON: json.RawMessage(`{"text":"4"}`)},
+	}
+	if err := st.InsertEvents(events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/sessions/tail-test/events?limit=2&tail=true", nil)
+	req.SetPathValue("id", "tail-test")
+	rec := httptest.NewRecorder()
+
+	handleGetSessionEvents(st).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+
+	var page struct {
+		Events []struct {
+			Seq int64 `json:"seq"`
+		} `json:"events"`
+		HasMore       bool  `json:"has_more"`
+		NextBeforeSeq int64 `json:"next_before_seq"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&page); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(page.Events) != 2 || page.Events[0].Seq != 3 || page.Events[1].Seq != 4 {
+		t.Fatalf("unexpected tail page: %+v", page.Events)
+	}
+	if !page.HasMore || page.NextBeforeSeq != 3 {
+		t.Fatalf("unexpected tail metadata: %+v", page)
+	}
+
+	req = httptest.NewRequest("GET", "/api/sessions/tail-test/events?limit=2&before_seq=3", nil)
+	req.SetPathValue("id", "tail-test")
+	rec = httptest.NewRecorder()
+
+	handleGetSessionEvents(st).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&page); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(page.Events) != 2 || page.Events[0].Seq != 1 || page.Events[1].Seq != 2 {
+		t.Fatalf("unexpected older page: %+v", page.Events)
+	}
+	if !page.HasMore || page.NextBeforeSeq != 1 {
+		t.Fatalf("unexpected older page metadata: %+v", page)
+	}
+}
+
 func TestHandleAppProxyRepointsStableURL(t *testing.T) {
 	st, err := store.Open(t.TempDir() + "/viewer-proxy.db")
 	if err != nil {
