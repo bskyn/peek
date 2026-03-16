@@ -1,3 +1,4 @@
+import { normalizeLiveEnvelope } from './normalize';
 import type { LiveEnvelope, StreamStatus } from './types';
 
 export function openStream(
@@ -16,7 +17,10 @@ export function openStream(
 
   source.onmessage = (event) => {
     try {
-      onEnvelope(JSON.parse(event.data) as LiveEnvelope);
+      const envelope = normalizeLiveEnvelope(JSON.parse(event.data));
+      if (envelope != null) {
+        onEnvelope(envelope);
+      }
     } catch {
       // Ignore malformed envelopes.
     }
