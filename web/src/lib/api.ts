@@ -1,7 +1,7 @@
 import type { EventPage, SessionDetail, SessionSummary, ViewerStatus } from './types';
 
-async function requestJSON<T>(input: string): Promise<T> {
-  const response = await fetch(input);
+async function requestJSON<T>(input: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, init);
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || `request failed: ${response.status}`);
@@ -9,8 +9,9 @@ async function requestJSON<T>(input: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function fetchSessions(): Promise<SessionSummary[]> {
-  const payload = await requestJSON<{ sessions: SessionSummary[] }>('/api/sessions');
+export async function fetchSessions(runtimeID?: string): Promise<SessionSummary[]> {
+  const suffix = runtimeID ? `?runtime_id=${encodeURIComponent(runtimeID)}` : '';
+  const payload = await requestJSON<{ sessions: SessionSummary[] }>(`/api/sessions${suffix}`);
   return payload.sessions;
 }
 
@@ -35,6 +36,17 @@ export async function fetchSessionEvents(sessionID: string): Promise<EventPage> 
   }
 }
 
-export async function fetchViewerStatus(): Promise<ViewerStatus> {
-  return requestJSON<ViewerStatus>('/api/status');
+export async function fetchViewerStatus(runtimeID?: string): Promise<ViewerStatus> {
+  const suffix = runtimeID ? `?runtime_id=${encodeURIComponent(runtimeID)}` : '';
+  return requestJSON<ViewerStatus>(`/api/status${suffix}`);
+}
+
+export async function switchRuntimeWorkspace(
+  runtimeID: string,
+  workspaceID: string,
+): Promise<{ session_id?: string; workspace_id?: string }> {
+  return requestJSON<{ session_id?: string; workspace_id?: string }>(
+    `/api/runtimes/${encodeURIComponent(runtimeID)}/workspaces/${encodeURIComponent(workspaceID)}/switch`,
+    { method: 'POST' },
+  );
 }

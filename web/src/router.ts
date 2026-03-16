@@ -16,7 +16,17 @@ export const sessionRoute = createRoute({
   path: '/sessions/$sessionId',
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, sessionRoute]);
+export const runtimeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/r/$runtimeId',
+});
+
+export const runtimeSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/r/$runtimeId/sessions/$sessionId',
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, sessionRoute, runtimeRoute, runtimeSessionRoute]);
 
 export const router = createRouter({ routeTree });
 

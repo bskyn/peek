@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { startTransition, useCallback, useEffect, useState } from 'react';
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 
 import { CostSidebar } from '../components/CostSidebar';
@@ -8,6 +8,7 @@ import { TimelineCard } from '../components/TimelineCard';
 import { useSessionDetail } from '../hooks/useSessionDetail';
 import type { TimelineSort } from '../hooks/useSessionDetail';
 import { useSessions } from '../hooks/useSessions';
+import { switchRuntimeWorkspace } from '../lib/api';
 import { buildHeaderTitle, deriveDisplayStatus, formatDateTime } from '../lib/format';
 import { openStream } from '../lib/stream';
 
@@ -16,12 +17,43 @@ export function App() {
   const tanstackNavigate = useNavigate();
 
   const sessionMatch = routerState.matches.find((m) => m.routeId === '/sessions/$sessionId');
+  const runtimeMatch = routerState.matches.find((m) => m.routeId === '/r/$runtimeId');
+  const runtimeSessionMatch = routerState.matches.find((m) => m.routeId === '/r/$runtimeId/sessions/$sessionId');
+  const selectedRuntimeID =
+    (runtimeSessionMatch?.params as Record<string, string> | undefined)?.runtimeId ??
+    (runtimeMatch?.params as Record<string, string> | undefined)?.runtimeId ??
+    '';
   const selectedSessionID =
-    (sessionMatch?.params as Record<string, string> | undefined)?.sessionId ?? '';
+    (runtimeSessionMatch?.params as Record<string, string> | undefined)?.sessionId ??
+    (sessionMatch?.params as Record<string, string> | undefined)?.sessionId ??
+    '';
+  const [switchError, setSwitchError] = useState('');
+  const [switchingWorkspaceID, setSwitchingWorkspaceID] = useState('');
 
   const navigateToSession = useCallback(
     (sessionId: string) => {
+      if (selectedRuntimeID !== '') {
+        tanstackNavigate({
+          to: '/r/$runtimeId/sessions/$sessionId',
+          params: { runtimeId: selectedRuntimeID, sessionId },
+        });
+        return;
+      }
       tanstackNavigate({ to: '/sessions/$sessionId', params: { sessionId } });
+    },
+    [selectedRuntimeID, tanstackNavigate],
+  );
+
+  const navigateToRuntime = useCallback(
+    (runtimeId: string, sessionId?: string) => {
+      if (sessionId != null && sessionId !== '') {
+        tanstackNavigate({
+          to: '/r/$runtimeId/sessions/$sessionId',
+          params: { runtimeId, sessionId },
+        });
+        return;
+      }
+      tanstackNavigate({ to: '/r/$runtimeId', params: { runtimeId } });
     },
     [tanstackNavigate],
   );
@@ -31,9 +63,12 @@ export function App() {
     error: sessionsError,
     isLoading: isLoadingSessions,
     activeSessionID,
+    currentRuntimeID,
     runtime,
+    runtimes,
+    workspaces,
     streamStatus: listStreamStatus,
-  } = useSessions();
+  } = useSessions(selectedRuntimeID);
 
   const {
     detail,
@@ -78,6 +113,38 @@ export function App() {
   const hasSession = selectedSessionID !== '';
   const showDetail = hasSession && !isLoadingDetail && detail != null;
 
+  useEffect(() => {
+    if (selectedRuntimeID === '' || selectedSessionID !== '' || activeSessionID === '') {
+      return;
+    }
+    startTransition(() => {
+      navigateToRuntime(selectedRuntimeID, activeSessionID);
+    });
+  }, [activeSessionID, navigateToRuntime, selectedRuntimeID, selectedSessionID]);
+
+  const handleWorkspaceSwitch = useCallback(
+    async (workspaceId: string) => {
+      if (selectedRuntimeID === '') return;
+      setSwitchError('');
+      setSwitchingWorkspaceID(workspaceId);
+      try {
+        const result = await switchRuntimeWorkspace(selectedRuntimeID, workspaceId);
+        startTransition(() => {
+          if (result.session_id != null && result.session_id !== '') {
+            navigateToRuntime(selectedRuntimeID, result.session_id);
+            return;
+          }
+          navigateToRuntime(selectedRuntimeID);
+        });
+      } catch (error) {
+        setSwitchError(error instanceof Error ? error.message : 'Workspace switch failed');
+      } finally {
+        setSwitchingWorkspaceID('');
+      }
+    },
+    [navigateToRuntime, selectedRuntimeID],
+  );
+
   return (
     <div className="flex h-full flex-col bg-base p-3 font-sans text-[13px]">
       {/* Top bar */}
@@ -113,14 +180,107 @@ export function App() {
                 {service.name}: {service.status}
               </span>
             ))}
-            {runtime.browser.path_prefix !== '' ? (
+            {selectedRuntimeID !== '' ? (
               <a
-                href={runtime.browser.path_prefix}
+                href={`/r/${selectedRuntimeID}/app/`}
                 className="rounded-full border border-lavender/30 bg-lavender/10 px-3 py-1 text-[11px] font-medium text-lavender"
               >
                 Open app
               </a>
             ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      {runtimes.length > 0 ? (
+        <section className="mb-3 flex flex-wrap gap-2">
+          {runtimes.map((entry) => {
+            const isCurrent = entry.runtime.id === currentRuntimeID;
+            const appHref =
+              entry.companion?.browser_path_prefix != null && entry.companion.browser_path_prefix !== ''
+                ? `/r/${entry.runtime.id}/app/`
+                : '';
+            return (
+              <div
+                key={entry.runtime.id}
+                className={`min-w-[220px] rounded-lg border px-3 py-2 ${
+                  isCurrent ? 'border-lavender/40 bg-lavender/10' : 'border-surface-0 bg-base'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-mono text-[11px] text-text">{entry.runtime.id}</p>
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-overlay-0">
+                      {entry.runtime.source} · {entry.runtime.status}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigateToRuntime(entry.runtime.id, entry.runtime.active_session_id)}
+                    className="rounded-full border border-surface-0 bg-mantle px-2.5 py-1 text-[10px] font-medium text-subtext-0"
+                  >
+                    View
+                  </button>
+                  {appHref !== '' ? (
+                    <a
+                      href={appHref}
+                      className="rounded-full border border-lavender/30 bg-lavender/10 px-2.5 py-1 text-[10px] font-medium text-lavender"
+                    >
+                      Open app
+                    </a>
+                  ) : null}
+                </div>
+                <p className="mt-2 text-[11px] text-subtext-0">
+                  workspace {entry.runtime.active_workspace_id}
+                </p>
+                {entry.checkout?.workspace_id === entry.runtime.root_workspace_id ? (
+                  <p className="text-[10px] text-overlay-0">reusing primary checkout</p>
+                ) : (
+                  <p className="text-[10px] text-overlay-0">isolated root worktree</p>
+                )}
+              </div>
+            );
+          })}
+        </section>
+      ) : null}
+
+      {selectedRuntimeID !== '' && workspaces.length > 0 ? (
+        <section className="mb-3 rounded-lg border border-surface-0 bg-base px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-overlay-0">
+                Runtime Workspaces
+              </p>
+              <h2 className="text-[13px] font-semibold text-text">
+                Switch the active worktree for this runtime
+              </h2>
+            </div>
+            {switchError !== '' ? <p className="text-[11px] text-red">{switchError}</p> : null}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {workspaces.map((entry) => {
+              return (
+                <button
+                  key={entry.workspace.id}
+                  type="button"
+                  disabled={entry.is_active || switchingWorkspaceID === entry.workspace.id}
+                  onClick={() => void handleWorkspaceSwitch(entry.workspace.id)}
+                  className={`rounded-lg border px-3 py-2 text-left ${
+                    entry.is_active
+                      ? 'border-lavender/40 bg-lavender/10'
+                      : 'border-surface-0 bg-mantle disabled:opacity-60'
+                  }`}
+                >
+                  <p className="font-mono text-[11px] text-text">{entry.workspace.id}</p>
+                  <p className="text-[10px] uppercase tracking-[0.12em] text-overlay-0">
+                    {entry.workspace.status}
+                  </p>
+                  {entry.latest_session != null ? (
+                    <p className="mt-1 text-[10px] text-subtext-0">{entry.latest_session.id}</p>
+                  ) : null}
+                </button>
+              );
+            })}
           </div>
         </section>
       ) : null}

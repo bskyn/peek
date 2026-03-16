@@ -42,6 +42,9 @@ peek run codex
 peek run claude -- --model sonnet
 peek run codex -- --model o4-mini
 
+# Reattach a specific stopped managed runtime
+peek run claude --runtime-id rt-abc123
+
 # Disable the web viewer
 peek run claude --no-web
 ```
@@ -54,9 +57,11 @@ Managed mode creates a workspace, tracks checkpoints around tool execution, and 
 
 #### Workspace-bound companions
 
-Peek can also keep one browser-facing companion runtime aligned with the active managed workspace. When enabled, branch and switch requests move the agent terminal and the app runtime together, while the stable Peek proxy URL stays at `/app/`.
+Peek can also keep one browser-facing companion runtime aligned with the active managed workspace. Companion services are now owned by the managed runtime instead of the `peek run` process, so they can survive agent exit and be reattached by a later managed session for the same runtime.
 
 - The model is single-active-workspace per lineage. Peek stops the previous workspace’s companion services before starting the next workspace’s services.
+- The first managed runtime for a checkout reuses the current repo root. A second live runtime against the same checkout gets its own isolated root worktree automatically.
+- Peek allocates internal companion ports per runtime and serves the app through runtime-scoped URLs such as `/r/<runtime-id>/app/` instead of exposing raw ports.
 - Ignore-only assets such as `.env.local` can be materialized into branch worktrees from the root checkout without storing secret values in the Peek database.
 - Bootstrap commands are fingerprinted. If lockfiles and materialized env inputs have not changed, Peek reuses the last successful bootstrap state instead of reinstalling dependencies on every switch.
 - If activation fails during bootstrap or service readiness, the branch or switch request fails and the managed runtime stays on the previous workspace.
@@ -73,7 +78,7 @@ Autodetection assumptions are intentionally narrow:
 - bootstrap is `pnpm install`, `npm ci`, or `yarn install`
 - browser readiness defaults to `http://127.0.0.1:5173/`, or `http://127.0.0.1:3000/` for Next.js
 
-When those assumptions are wrong, add an explicit manifest:
+When those assumptions are wrong, add an explicit manifest. Peek will rewrite localhost ports per runtime, so manifests should describe the service target shape rather than assume one global port:
 
 ```json
 {
@@ -154,6 +159,15 @@ peek ws list
 peek ws branch ws-abc123 5
 peek ws status ws-abc123
 ```
+
+For multi-panel work, run `peek run ...` in two terminals from the same repo. The first runtime keeps the current checkout; the second runtime gets an isolated root worktree seeded from the live checkout state and its own `/r/<runtime-id>/app/` route.
+
+The viewer is runtime-aware in managed mode:
+
+- each managed run opens at `/r/<runtime-id>/...`
+- the session list is scoped to that runtime lineage
+- the viewer can switch the runtime between its managed workspaces
+- refreshing `/r/<runtime-id>/app/` always resolves the current app target for that runtime
 
 #### Branch semantics
 

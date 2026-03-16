@@ -2,7 +2,14 @@ import { useEffect, useState } from 'react';
 
 import { fetchSessions, fetchViewerStatus } from '../lib/api';
 import { openStream } from '../lib/stream';
-import type { LiveEnvelope, RuntimeStatus, SessionSummary, StreamStatus } from '../lib/types';
+import type {
+  LiveEnvelope,
+  ManagedRuntimeView,
+  RuntimeWorkspaceView,
+  RuntimeStatus,
+  SessionSummary,
+  StreamStatus,
+} from '../lib/types';
 
 function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
   return [...sessions].sort((a, b) => {
@@ -23,26 +30,35 @@ function upsertSession(current: SessionSummary[], next: SessionSummary): Session
   return [next, ...current.filter((s) => s.id !== next.id)];
 }
 
-export function useSessions() {
+export function useSessions(runtimeID: string) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [activeSessionID, setActiveSessionID] = useState('');
+  const [currentRuntimeID, setCurrentRuntimeID] = useState('');
   const [runtime, setRuntime] = useState<RuntimeStatus | undefined>(undefined);
+  const [runtimes, setRuntimes] = useState<ManagedRuntimeView[]>([]);
+  const [workspaces, setWorkspaces] = useState<RuntimeWorkspaceView[]>([]);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('connecting');
 
   // Initial fetch — merges with any SSE data that arrived first
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
+    setSessions([]);
+    setWorkspaces([]);
+    setRuntime(undefined);
 
-    Promise.all([fetchSessions(), fetchViewerStatus()])
+    Promise.all([fetchSessions(runtimeID), fetchViewerStatus(runtimeID)])
       .then(([nextSessions, status]) => {
         if (cancelled) return;
         // Merge fetched data with any SSE updates that arrived during the fetch
         setSessions((current) => mergeSessions(nextSessions, current));
+        setCurrentRuntimeID(status.current_runtime_id ?? '');
         setActiveSessionID((current) => current || (status.active_session_id ?? ''));
         setRuntime(status.runtime);
+        setRuntimes(status.runtimes ?? []);
+        setWorkspaces(status.workspaces ?? []);
         setError('');
       })
       .catch((err: unknown) => {
@@ -56,18 +72,21 @@ export function useSessions() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runtimeID]);
 
   // Live stream for session list
   useEffect(() => {
     return openStream(
-      '',
+      runtimeID === '' ? '' : `runtime_id=${encodeURIComponent(runtimeID)}`,
       (envelope: LiveEnvelope) => {
         if (envelope.type === 'active_session') {
           setActiveSessionID(envelope.active_session_id ?? '');
           return;
         }
         if (envelope.type === 'runtime_status') {
+          if (envelope.runtime_id) {
+            setCurrentRuntimeID(envelope.runtime_id);
+          }
           setRuntime(envelope.runtime);
           return;
         }
@@ -76,7 +95,17 @@ export function useSessions() {
       },
       setStreamStatus,
     );
-  }, []);
+  }, [runtimeID]);
 
-  return { sessions, error, isLoading, activeSessionID, runtime, streamStatus };
+  return {
+    sessions,
+    error,
+    isLoading,
+    activeSessionID,
+    currentRuntimeID,
+    runtime,
+    runtimes,
+    workspaces,
+    streamStatus,
+  };
 }
