@@ -118,6 +118,37 @@ CREATE TABLE IF NOT EXISTS managed_runtime_requests (
 
 CREATE INDEX IF NOT EXISTS idx_managed_runtime_requests_runtime_status
 	ON managed_runtime_requests(runtime_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS workspace_bootstrap_states (
+	workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+	fingerprint TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'pending',
+	last_error TEXT NOT NULL DEFAULT '',
+	started_at TEXT NOT NULL DEFAULT '',
+	finished_at TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_bootstrap_states_status
+	ON workspace_bootstrap_states(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS companion_service_states (
+	runtime_id TEXT NOT NULL REFERENCES managed_runtimes(id),
+	workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	service_name TEXT NOT NULL,
+	role TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'stopped',
+	target_url TEXT NOT NULL DEFAULT '',
+	last_error TEXT NOT NULL DEFAULT '',
+	started_at TEXT NOT NULL DEFAULT '',
+	ready_at TEXT NOT NULL DEFAULT '',
+	stopped_at TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (runtime_id, service_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_companion_service_states_runtime
+	ON companion_service_states(runtime_id, updated_at);
 `
 
 // migrations that add columns to existing tables. Each is idempotent —

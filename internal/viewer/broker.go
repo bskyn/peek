@@ -3,6 +3,7 @@ package viewer
 import (
 	"sync"
 
+	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/store"
 )
@@ -11,10 +12,11 @@ const subscriberBufferSize = 64
 
 // LiveEnvelope is the SSE payload contract for browser subscribers.
 type LiveEnvelope struct {
-	Type            string                `json:"type"`
-	Session         *store.SessionSummary `json:"session,omitempty"`
-	Event           *event.Event          `json:"event,omitempty"`
-	ActiveSessionID string                `json:"active_session_id,omitempty"`
+	Type            string                    `json:"type"`
+	Session         *store.SessionSummary     `json:"session,omitempty"`
+	Event           *event.Event              `json:"event,omitempty"`
+	ActiveSessionID string                    `json:"active_session_id,omitempty"`
+	Runtime         *companion.StatusSnapshot `json:"runtime,omitempty"`
 }
 
 type subscriber struct {
@@ -93,6 +95,14 @@ func (b *Broker) PublishActiveSession(sessionID string) {
 	b.publish(LiveEnvelope{
 		Type:            "active_session",
 		ActiveSessionID: sessionID,
+	})
+}
+
+// PublishRuntimeStatus broadcasts active workspace runtime state.
+func (b *Broker) PublishRuntimeStatus(status companion.StatusSnapshot) {
+	b.publish(LiveEnvelope{
+		Type:    "runtime_status",
+		Runtime: &status,
 	})
 }
 

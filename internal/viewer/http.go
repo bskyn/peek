@@ -5,15 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"path"
 	"strconv"
+	"strings"
 
+	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/usage"
 )
 
 type statusResponse struct {
-	ActiveSessionID string `json:"active_session_id"`
+	ActiveSessionID string                    `json:"active_session_id"`
+	Runtime         *companion.StatusSnapshot `json:"runtime,omitempty"`
 }
 
 // NewHandler builds the API and static routes for the viewer runtime.
@@ -29,16 +35,42 @@ func NewHandler(st *store.Store, rt *Runtime) (http.Handler, error) {
 	mux.HandleFunc("GET /api/sessions/{id}/events", handleGetSessionEvents(st))
 	mux.HandleFunc("GET /api/status", handleGetStatus(rt))
 	mux.Handle("GET /api/stream", NewStreamHandler(rt.Broker()))
+	mux.Handle("/app/", handleAppProxy(rt))
 	mux.Handle("/", staticHandler)
 	return mux, nil
 }
 
 func handleGetStatus(rt *Runtime) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		status := rt.RuntimeStatus()
 		writeJSON(w, http.StatusOK, statusResponse{
 			ActiveSessionID: rt.ActiveSessionID(),
+			Runtime:         &status,
 		})
 	}
+}
+
+func handleAppProxy(rt *Runtime) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := rt.proxyTarget()
+		if target == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "primary app is not ready")
+			return
+		}
+		reverseProxy := httputil.NewSingleHostReverseProxy(target)
+		reverseProxy.Transport = rt.proxyTransport()
+		originalDirector := reverseProxy.Director
+		reverseProxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			req.URL.Path = joinProxyPath(target, strings.TrimPrefix(r.URL.Path, "/app"))
+			req.URL.RawPath = req.URL.Path
+			req.Host = target.Host
+		}
+		reverseProxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, err error) {
+			writeAPIError(rw, http.StatusBadGateway, err.Error())
+		}
+		reverseProxy.ServeHTTP(w, r)
+	})
 }
 
 func handleListSessions(st *store.Store) http.HandlerFunc {
@@ -161,4 +193,15 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeAPIError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func joinProxyPath(target *url.URL, suffix string) string {
+	base := target.Path
+	if base == "" {
+		base = "/"
+	}
+	if suffix == "" {
+		return base
+	}
+	return path.Join(base, suffix)
 }

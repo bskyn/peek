@@ -1,11 +1,15 @@
 package viewer
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/event"
 	"github.com/bskyn/peek/internal/store"
 )
@@ -90,4 +94,58 @@ func TestHandleGetSessionEventsAnnotatesHistoricalUsage(t *testing.T) {
 	if totalCost, ok := usage["total_cost_usd"].(float64); !ok || totalCost <= 0 {
 		t.Fatalf("expected positive total cost: %+v", usage)
 	}
+}
+
+func TestHandleAppProxyRepointsStableURL(t *testing.T) {
+	runtime := &Runtime{broker: NewBroker()}
+	runtime.SetRuntimeStatus(companion.StatusSnapshot{
+		Enabled: true,
+		Browser: companion.BrowserSummary{PathPrefix: "/app/"},
+	})
+	runtime.SetProxyTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := "root workspace"
+		if req.URL.Host == "child.test" {
+			body = "child workspace"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewBufferString(body)),
+			Request:    req,
+		}, nil
+	}))
+
+	if err := runtime.SetProxyTarget("http://root.test"); err != nil {
+		t.Fatalf("set first proxy target: %v", err)
+	}
+	handler := handleAppProxy(runtime)
+
+	firstReq := httptest.NewRequest("GET", "/app/", nil)
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("unexpected first status: %d", firstRec.Code)
+	}
+	if body := firstRec.Body.String(); body != "root workspace" {
+		t.Fatalf("unexpected first proxy body: %q", body)
+	}
+
+	if err := runtime.SetProxyTarget("http://child.test"); err != nil {
+		t.Fatalf("set second proxy target: %v", err)
+	}
+	secondReq := httptest.NewRequest("GET", "/app/", nil)
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("unexpected second status: %d", secondRec.Code)
+	}
+	if body := secondRec.Body.String(); body != "child workspace" {
+		t.Fatalf("unexpected second proxy body: %q", body)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }

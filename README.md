@@ -52,6 +52,66 @@ Managed mode creates a workspace, tracks checkpoints around tool execution, and 
 
 `peek run` keeps ownership of the live terminal. When you branch or switch, use a second terminal to send the control request while the original `peek run` process stays in charge of the provider CLI.
 
+#### Workspace-bound companions
+
+Peek can also keep one browser-facing companion runtime aligned with the active managed workspace. When enabled, branch and switch requests move the agent terminal and the app runtime together, while the stable Peek proxy URL stays at `/app/`.
+
+- The model is single-active-workspace per lineage. Peek stops the previous workspace’s companion services before starting the next workspace’s services.
+- Ignore-only assets such as `.env.local` can be materialized into branch worktrees from the root checkout without storing secret values in the Peek database.
+- Bootstrap commands are fingerprinted. If lockfiles and materialized env inputs have not changed, Peek reuses the last successful bootstrap state instead of reinstalling dependencies on every switch.
+- If activation fails during bootstrap or service readiness, the branch or switch request fails and the managed runtime stays on the previous workspace.
+
+Peek resolves companion runtimes in this order:
+
+1. `peek.runtime.json` in the repo root
+2. Frontend autodetection for Node repos with a lockfile plus a `package.json` containing a `dev` script
+
+Autodetection assumptions are intentionally narrow:
+
+- `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock` determines the package manager
+- the primary app is the best `package.json` candidate with a `dev` script, preferring `apps/web`, `frontend`, and `web`
+- bootstrap is `pnpm install`, `npm ci`, or `yarn install`
+- browser readiness defaults to `http://127.0.0.1:5173/`, or `http://127.0.0.1:3000/` for Next.js
+
+When those assumptions are wrong, add an explicit manifest:
+
+```json
+{
+  "bootstrap": {
+    "fingerprint_paths": ["pnpm-lock.yaml", "apps/web/package.json"],
+    "commands": [
+      {
+        "command": ["pnpm", "install", "--frozen-lockfile"]
+      }
+    ]
+  },
+  "env_sources": [
+    { "path": ".env.local" }
+  ],
+  "services": [
+    {
+      "name": "web",
+      "role": "primary",
+      "workdir": "apps/web",
+      "command": ["pnpm", "--dir", "apps/web", "dev"],
+      "env": {
+        "HOST": "127.0.0.1",
+        "PORT": "4173"
+      },
+      "ready": {
+        "type": "http",
+        "url": "http://127.0.0.1:4173/",
+        "timeout_seconds": 45
+      }
+    }
+  ],
+  "browser": {
+    "service": "web",
+    "path_prefix": "/app/"
+  }
+}
+```
+
 ### Branching and workspaces
 
 Branch from any event sequence to explore alternate paths. Run `peek run ...` in one terminal, then issue branch/switch requests from another terminal. The source workspace freezes and the live managed terminal relaunches into the selected workspace:

@@ -31,6 +31,7 @@ export function App() {
     error: sessionsError,
     isLoading: isLoadingSessions,
     activeSessionID,
+    runtime,
     streamStatus: listStreamStatus,
   } = useSessions();
 
@@ -89,6 +90,40 @@ export function App() {
           <span className="text-[11px] font-medium">{status.label}</span>
         </div>
       </header>
+
+      {runtime?.enabled ? (
+        <section className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-surface-0 bg-base px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-overlay-0">
+              Workspace Runtime
+            </p>
+            <div className="flex flex-wrap items-center gap-2 text-[12px] text-subtext-0">
+              <span className="font-medium text-text">{runtime.phase}</span>
+              {runtime.active_workspace_id ? <span>{runtime.active_workspace_id}</span> : null}
+              {runtime.message ? <span>{runtime.message}</span> : null}
+              {runtime.bootstrap.reused ? <span>bootstrap reused</span> : null}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {runtime.services.map((service) => (
+              <span
+                key={service.name}
+                className="rounded-full border border-surface-0 bg-mantle px-2 py-1 text-[11px] text-subtext-0"
+              >
+                {service.name}: {service.status}
+              </span>
+            ))}
+            {runtime.browser.path_prefix !== '' ? (
+              <a
+                href={runtime.browser.path_prefix}
+                className="rounded-full border border-lavender/30 bg-lavender/10 px-3 py-1 text-[11px] font-medium text-lavender"
+              >
+                Open app
+              </a>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
 
       {/* Main workspace */}
       <main

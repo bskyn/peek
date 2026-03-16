@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
+	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/store"
 )
 
@@ -16,11 +18,14 @@ const shutdownTimeout = 3 * time.Second
 
 // Runtime owns the HTTP server and live broker for the browser viewer.
 type Runtime struct {
-	baseURL string
-	broker  *Broker
-	server  *http.Server
-	mu      sync.RWMutex
-	active  string
+	baseURL   string
+	broker    *Broker
+	server    *http.Server
+	mu        sync.RWMutex
+	active    string
+	status    companion.StatusSnapshot
+	target    *url.URL
+	transport http.RoundTripper
 }
 
 // BaseURL returns the listener URL for the runtime.
@@ -66,6 +71,79 @@ func (r *Runtime) SetActiveSessionID(sessionID string) {
 	r.active = sessionID
 	r.mu.Unlock()
 	r.broker.PublishActiveSession(sessionID)
+}
+
+// RuntimeStatus returns the current companion/runtime status for the active workspace.
+func (r *Runtime) RuntimeStatus() companion.StatusSnapshot {
+	if r == nil {
+		return companion.StatusSnapshot{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.status
+}
+
+// SetRuntimeStatus updates the current workspace runtime status and broadcasts it.
+func (r *Runtime) SetRuntimeStatus(status companion.StatusSnapshot) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.status = status
+	r.mu.Unlock()
+	r.broker.PublishRuntimeStatus(status)
+}
+
+// SetProxyTarget updates the live proxy destination for the primary app.
+func (r *Runtime) SetProxyTarget(rawURL string) error {
+	if r == nil {
+		return nil
+	}
+	var target *url.URL
+	if rawURL != "" {
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			return err
+		}
+		target = parsed
+	}
+	r.mu.Lock()
+	r.target = target
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *Runtime) proxyTarget() *url.URL {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.target == nil {
+		return nil
+	}
+	cloned := *r.target
+	return &cloned
+}
+
+func (r *Runtime) proxyTransport() http.RoundTripper {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.transport
+}
+
+// SetProxyTransport overrides the reverse proxy transport. Tests use this to
+// validate routing without opening a real listener.
+func (r *Runtime) SetProxyTransport(transport http.RoundTripper) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.transport = transport
+	r.mu.Unlock()
 }
 
 // Start starts the embedded viewer server on a loopback listener.

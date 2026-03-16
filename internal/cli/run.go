@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/connector/claude"
 	"github.com/bskyn/peek/internal/connector/codex"
 	"github.com/bskyn/peek/internal/event"
@@ -77,6 +78,11 @@ func runManaged(source managed.Source, extraArgs []string) error {
 	absProjectDir, err := filepath.Abs(projectDir)
 	if err != nil {
 		absProjectDir = projectDir
+	}
+
+	runtimeSpec, err := companion.ResolveProjectRuntime(absProjectDir)
+	if err != nil {
+		return fmt.Errorf("resolve project runtime: %w", err)
 	}
 
 	st, err := store.Open(dbPath)
@@ -155,6 +161,9 @@ func runManaged(source managed.Source, extraArgs []string) error {
 		fmt.Printf("Peek viewer: %s\n", rt.InitialURL(buildViewerOptions(sessID)))
 		fmt.Printf("Peek workspace: %s\n\n", wsID)
 	}
+	if runtimeSpec != nil {
+		fmt.Printf("Peek companion runtime: %s\n", runtimeSpec.ConfigSource)
+	}
 
 	orch := managed.NewOrchestrator(st, absProjectDir, managedWorktreeBase())
 	supervisor := newManagedSupervisor(
@@ -167,6 +176,8 @@ func runManaged(source managed.Source, extraArgs []string) error {
 		wsID,
 		wsID,
 		sessID,
+		absProjectDir,
+		runtimeSpec,
 		managedLaunchConfig{},
 	)
 

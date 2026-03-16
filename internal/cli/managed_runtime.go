@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bskyn/peek/internal/companion"
 	"github.com/bskyn/peek/internal/managed"
 	"github.com/bskyn/peek/internal/store"
 	"github.com/bskyn/peek/internal/viewer"
@@ -52,11 +53,12 @@ type managedSupervisor struct {
 	rootWorkspaceID   string
 	activeWorkspaceID string
 	activeSessionID   string
+	companionMgr      *companion.Manager
 	launch            managedLaunchConfig
 }
 
-func newManagedSupervisor(st *store.Store, rt *viewer.Runtime, orch *managed.Orchestrator, source managed.Source, baseArgs []string, runtimeID, rootWorkspaceID, activeWorkspaceID, activeSessionID string, launch managedLaunchConfig) *managedSupervisor {
-	return &managedSupervisor{
+func newManagedSupervisor(st *store.Store, rt *viewer.Runtime, orch *managed.Orchestrator, source managed.Source, baseArgs []string, runtimeID, rootWorkspaceID, activeWorkspaceID, activeSessionID, projectDir string, companionSpec *companion.ProjectRuntimeSpec, launch managedLaunchConfig) *managedSupervisor {
+	supervisor := &managedSupervisor{
 		st:                st,
 		viewer:            rt,
 		orch:              orch,
@@ -68,6 +70,28 @@ func newManagedSupervisor(st *store.Store, rt *viewer.Runtime, orch *managed.Orc
 		activeSessionID:   activeSessionID,
 		launch:            launch,
 	}
+	if companionSpec != nil {
+		supervisor.companionMgr = companion.NewManager(
+			st,
+			projectDir,
+			runtimeID,
+			companionSpec,
+			func(status companion.StatusSnapshot) {
+				if rt == nil {
+					return
+				}
+				status.Browser.PathPrefix = companionSpec.Browser.PathPrefix
+				if status.Browser.TargetURL != "" {
+					_ = rt.SetProxyTarget(status.Browser.TargetURL)
+				}
+				if status.Browser.TargetURL == "" {
+					_ = rt.SetProxyTarget("")
+				}
+				rt.SetRuntimeStatus(status)
+			},
+		)
+	}
+	return supervisor
 }
 
 func (s *managedSupervisor) Run(ctx context.Context) error {
@@ -89,10 +113,20 @@ func (s *managedSupervisor) Run(ctx context.Context) error {
 	defer func() {
 		_ = s.st.ParkManagedRuntime(s.runtimeID, s.rootWorkspaceID, s.activeSessionID)
 	}()
+	defer func() {
+		if s.companionMgr != nil {
+			_ = s.companionMgr.Stop(context.Background())
+		}
+	}()
 
 	activeWorkspace, err := s.st.GetWorkspace(s.activeWorkspaceID)
 	if err != nil {
 		return fmt.Errorf("load active workspace: %w", err)
+	}
+	if s.companionMgr != nil {
+		if _, err := s.companionMgr.Activate(ctx, activeWorkspace.ID, activeWorkspace.WorktreePath); err != nil {
+			return fmt.Errorf("activate companion runtime: %w", err)
+		}
 	}
 
 	spec := managed.BuildInitialResumeSpec(s.source, s.activeWorkspaceID, s.activeSessionID, activeWorkspace.WorktreePath, s.baseArgs)
@@ -215,6 +249,15 @@ func (s *managedSupervisor) applyRequest(req *store.ManagedRuntimeRequest) (mana
 		if err != nil {
 			return managed.ResumeSpec{}, store.ManagedRuntimeResponse{}, err
 		}
+		if s.companionMgr != nil {
+			if _, err := s.companionMgr.Activate(context.Background(), result.NewWorkspaceID, result.WorktreePath); err != nil {
+				currentWorkspace, currentErr := s.st.GetWorkspace(s.activeWorkspaceID)
+				if currentErr == nil {
+					_, _ = s.companionMgr.Activate(context.Background(), currentWorkspace.ID, currentWorkspace.WorktreePath)
+				}
+				return managed.ResumeSpec{}, store.ManagedRuntimeResponse{}, err
+			}
+		}
 
 		return spec, store.ManagedRuntimeResponse{
 			WorkspaceID:  result.NewWorkspaceID,
@@ -250,6 +293,15 @@ func (s *managedSupervisor) applyRequest(req *store.ManagedRuntimeRequest) (mana
 		)
 		if err != nil {
 			return managed.ResumeSpec{}, store.ManagedRuntimeResponse{}, err
+		}
+		if s.companionMgr != nil {
+			if _, err := s.companionMgr.Activate(context.Background(), targetWorkspace.ID, targetWorkspace.WorktreePath); err != nil {
+				currentWorkspace, currentErr := s.st.GetWorkspace(s.activeWorkspaceID)
+				if currentErr == nil {
+					_, _ = s.companionMgr.Activate(context.Background(), currentWorkspace.ID, currentWorkspace.WorktreePath)
+				}
+				return managed.ResumeSpec{}, store.ManagedRuntimeResponse{}, err
+			}
 		}
 
 		return spec, store.ManagedRuntimeResponse{

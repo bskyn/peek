@@ -93,6 +93,8 @@ func TestManagedSupervisorBranchAndSwitchHandoff(t *testing.T) {
 				"ws-root",
 				"ws-root",
 				"s-root",
+				repoDir,
+				nil,
 				managedLaunchConfig{
 					command: scriptPath,
 					env:     []string{"PEEK_TEST_LAUNCH_LOG=" + logPath},
@@ -212,6 +214,8 @@ func TestManagedSupervisorParksStoppedRuntimeAtRoot(t *testing.T) {
 		"ws-root",
 		"ws-root",
 		"s-root",
+		repoDir,
+		nil,
 		managedLaunchConfig{
 			command: scriptPath,
 			env:     []string{"PEEK_TEST_LAUNCH_LOG=" + logPath},
@@ -325,6 +329,8 @@ func TestManagedSupervisorPropagatesProviderExitCode(t *testing.T) {
 		"ws-root",
 		"ws-root",
 		"s-root",
+		repoDir,
+		nil,
 		managedLaunchConfig{command: scriptPath},
 	)
 

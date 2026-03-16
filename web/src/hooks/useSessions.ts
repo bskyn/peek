@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { fetchSessions, fetchViewerStatus } from '../lib/api';
 import { openStream } from '../lib/stream';
-import type { LiveEnvelope, SessionSummary, StreamStatus } from '../lib/types';
+import type { LiveEnvelope, RuntimeStatus, SessionSummary, StreamStatus } from '../lib/types';
 
 function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
   return [...sessions].sort((a, b) => {
@@ -28,6 +28,7 @@ export function useSessions() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [activeSessionID, setActiveSessionID] = useState('');
+  const [runtime, setRuntime] = useState<RuntimeStatus | undefined>(undefined);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('connecting');
 
   // Initial fetch — merges with any SSE data that arrived first
@@ -41,6 +42,7 @@ export function useSessions() {
         // Merge fetched data with any SSE updates that arrived during the fetch
         setSessions((current) => mergeSessions(nextSessions, current));
         setActiveSessionID((current) => current || (status.active_session_id ?? ''));
+        setRuntime(status.runtime);
         setError('');
       })
       .catch((err: unknown) => {
@@ -65,6 +67,10 @@ export function useSessions() {
           setActiveSessionID(envelope.active_session_id ?? '');
           return;
         }
+        if (envelope.type === 'runtime_status') {
+          setRuntime(envelope.runtime);
+          return;
+        }
         if (envelope.type !== 'session_upsert' || envelope.session == null) return;
         setSessions((cur) => sortSessions(upsertSession(cur, envelope.session!)));
       },
@@ -72,5 +78,5 @@ export function useSessions() {
     );
   }, []);
 
-  return { sessions, error, isLoading, activeSessionID, streamStatus };
+  return { sessions, error, isLoading, activeSessionID, runtime, streamStatus };
 }

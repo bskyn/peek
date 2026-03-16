@@ -1,0 +1,36 @@
+{
+  "bootstrap": {
+    "fingerprint_paths": ["pnpm-lock.yaml", "apps/web/package.json"],
+    "commands": [
+      {
+        "command": ["pnpm", "install", "--frozen-lockfile"]
+      }
+    ]
+  },
+  "env_sources": [
+    {
+      "path": ".env.local"
+    }
+  ],
+  "services": [
+    {
+      "name": "web",
+      "role": "primary",
+      "workdir": "apps/web",
+      "command": ["pnpm", "--dir", "apps/web", "dev"],
+      "env": {
+        "HOST": "127.0.0.1",
+        "PORT": "4173"
+      },
+      "ready": {
+        "type": "http",
+        "url": "http://127.0.0.1:4173/",
+        "timeout_seconds": 45
+      }
+    }
+  ],
+  "browser": {
+    "service": "web",
+    "path_prefix": "/app/"
+  }
+}
