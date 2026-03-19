@@ -71,7 +71,9 @@ func newWorkspaceListCmd() *cobra.Command {
 }
 
 func newWorkspaceBranchCmd() *cobra.Command {
-	return &cobra.Command{
+	var shellMode bool
+
+	cmd := &cobra.Command{
 		Use:   "branch <workspace-id> <seq>",
 		Short: "Send a branch request to the live managed runtime",
 		Args:  cobra.ExactArgs(2),
@@ -93,18 +95,41 @@ func newWorkspaceBranchCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("Branched from %s @seq %d\n", wsID, seq)
-			fmt.Printf("  New workspace: %s\n", result.ResponseWorkspaceID)
-			fmt.Printf("  New session:   %s\n", result.ResponseSessionID)
-			fmt.Printf("  Worktree:      %s\n", result.ResponseWorktreePath)
-			fmt.Printf("  Source %s is now frozen.\n", wsID)
+			if shellMode {
+				tr := workspaceTransitionResult{
+					RuntimeID:    result.RuntimeID,
+					WorkspaceID:  result.ResponseWorkspaceID,
+					SessionID:    result.ResponseSessionID,
+					WorktreePath: result.ResponseWorktreePath,
+					Kind:         "branch",
+					SourceFrozen: wsID,
+				}
+				if rt, rtErr := st.GetManagedRuntime(result.RuntimeID); rtErr == nil {
+					tr.ProjectPath = rt.ProjectPath
+				}
+				fmt.Fprintf(os.Stderr, "Branched from %s @seq %d\n", wsID, seq)
+				fmt.Fprintf(os.Stderr, "  New workspace: %s\n", result.ResponseWorkspaceID)
+				fmt.Fprintf(os.Stderr, "  Worktree:      %s\n", result.ResponseWorktreePath)
+				fmt.Print(renderTransitionShell(tr))
+			} else {
+				fmt.Printf("Branched from %s @seq %d\n", wsID, seq)
+				fmt.Printf("  New workspace: %s\n", result.ResponseWorkspaceID)
+				fmt.Printf("  New session:   %s\n", result.ResponseSessionID)
+				fmt.Printf("  Worktree:      %s\n", result.ResponseWorktreePath)
+				fmt.Printf("  Source %s is now frozen.\n", wsID)
+			}
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&shellMode, "shell", false, "Emit eval-safe shell variables (for hook consumers)")
+	return cmd
 }
 
 func newWorkspaceSwitchCmd() *cobra.Command {
-	return &cobra.Command{
+	var shellMode bool
+
+	cmd := &cobra.Command{
 		Use:   "switch <workspace-id>",
 		Short: "Send a switch request to the live managed runtime",
 		Args:  cobra.ExactArgs(1),
@@ -120,17 +145,41 @@ func newWorkspaceSwitchCmd() *cobra.Command {
 				return err
 			}
 
-			ws, err := st.GetWorkspace(result.ResponseWorkspaceID)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Switched to workspace %s [%s]\n", ws.ID, ws.Status)
-			if result.ResponseWorktreePath != "" {
-				fmt.Printf("  Worktree: %s\n", result.ResponseWorktreePath)
+			if shellMode {
+				tr := workspaceTransitionResult{
+					RuntimeID:    result.RuntimeID,
+					WorkspaceID:  result.ResponseWorkspaceID,
+					SessionID:    result.ResponseSessionID,
+					WorktreePath: result.ResponseWorktreePath,
+					Kind:         "switch",
+				}
+				if rt, rtErr := st.GetManagedRuntime(result.RuntimeID); rtErr == nil {
+					tr.ProjectPath = rt.ProjectPath
+				}
+				ws, wsErr := st.GetWorkspace(result.ResponseWorkspaceID)
+				if wsErr == nil {
+					fmt.Fprintf(os.Stderr, "Switched to workspace %s [%s]\n", ws.ID, ws.Status)
+				}
+				if result.ResponseWorktreePath != "" {
+					fmt.Fprintf(os.Stderr, "  Worktree: %s\n", result.ResponseWorktreePath)
+				}
+				fmt.Print(renderTransitionShell(tr))
+			} else {
+				ws, err := st.GetWorkspace(result.ResponseWorkspaceID)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Switched to workspace %s [%s]\n", ws.ID, ws.Status)
+				if result.ResponseWorktreePath != "" {
+					fmt.Printf("  Worktree: %s\n", result.ResponseWorktreePath)
+				}
 			}
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&shellMode, "shell", false, "Emit eval-safe shell variables (for hook consumers)")
+	return cmd
 }
 
 func newWorkspaceMergeCmd() *cobra.Command {

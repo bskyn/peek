@@ -93,9 +93,7 @@ When those assumptions are wrong, add an explicit manifest. Peek will rewrite lo
       }
     ]
   },
-  "env_sources": [
-    { "path": ".env.local" }
-  ],
+  "env_sources": [{ "path": ".env.local" }],
   "services": [
     {
       "name": "web",
@@ -184,6 +182,70 @@ The viewer is runtime-aware in managed mode:
 - **Delete/prune**: `peek workspace delete <id>` deletes ordinary inactive branch workspaces. If `<id>` is a root workspace, Peek prunes the entire stopped lineage instead, but refuses the root that still owns the current checkout lease. `peek workspace prune` does the same sweep automatically for all stopped stale roots in the current repo.
 - **Cool**: dematerializes inactive worktrees down to hidden git refs. Switch re-materializes on demand.
 - **Delete**: removes an inactive branch workspace, including its linked git worktree. For root workspaces, delete delegates to the stopped-lineage prune flow. Active workspaces and parents with children are still rejected.
+
+### Shell integration
+
+Shell hooks let attached shells auto-follow the active workspace for a managed runtime. Without hooks, `peek workspace branch` and `peek workspace switch` still work but won't move your shell's working directory.
+
+#### One-time setup
+
+Add to your `.zshrc` (or `.bashrc`):
+
+```sh
+eval "$(peek shell init zsh)"   # or bash
+```
+
+This installs a `peek` wrapper function and a prompt-time sync hook.
+
+#### Attaching to a runtime
+
+After `peek run claude` starts, attach one or more shells to its runtime:
+
+```sh
+# List runtimes to find the ID
+peek workspace list
+
+# Attach this shell to a runtime (sets PEEK_RUNTIME_ID)
+eval "$(peek shell attach rt-abc123)"
+
+# Check attachment status
+peek shell status
+```
+
+#### Auto-follow on branch and switch
+
+Once attached and hooked, `peek workspace branch` and `peek workspace switch` automatically move the calling shell to the new worktree. Other attached shells converge on the next prompt:
+
+```sh
+# Shell A: branch — shell A moves to the new worktree immediately
+peek workspace branch ws-abc123 5
+
+# Shell B: at the next prompt, auto-follows to the same worktree
+```
+
+#### Pin and unpin for review
+
+Pin a shell to hold it in its current worktree while other attached shells continue to follow:
+
+```sh
+# Pin this shell (stays put on branch/switch)
+eval "$(peek shell pin)"
+
+# Unpin to resume auto-following
+eval "$(peek shell unpin)"
+```
+
+This is useful for keeping a review or merge panel on the root workspace while coding shells follow the active branch.
+
+#### Detach
+
+```sh
+eval "$(peek shell detach)"
+```
+
+#### Without hooks
+
+When hooks are not sourced, all `peek workspace` commands still work and print human-readable output. The only difference is that your shell won't cd automatically — you'll need to `cd` to the printed worktree path manually.
 
 ### Monitoring existing sessions
 
