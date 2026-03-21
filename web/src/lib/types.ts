@@ -73,6 +73,43 @@ export type ViewerStatus = {
   workspaces: RuntimeWorkspaceView[];
 };
 
+export type WorkspaceSwitchResponse = {
+  session_id?: string;
+  workspace_id?: string;
+};
+
+export type ViewerWorkspaceTransition =
+  | {
+      status: 'idle';
+    }
+  | {
+      status: 'switching';
+      runtime_id: string;
+      requested_workspace_id: string;
+    }
+  | {
+      status: 'converged';
+      runtime_id: string;
+      requested_workspace_id: string;
+      response_workspace_id?: string;
+      response_session_id?: string;
+      active_workspace_id?: string;
+      active_session_id?: string;
+    }
+  | {
+      status: 'failed';
+      runtime_id: string;
+      requested_workspace_id: string;
+      error: string;
+    };
+
+export type ViewerShellFollowHint = {
+  runtime_id: string;
+  init_command: string;
+  attach_command: string;
+  status_command: string;
+};
+
 export type BootstrapStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 
 export type CompanionServiceStatus = 'starting' | 'ready' | 'failed' | 'stopped';

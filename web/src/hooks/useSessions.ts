@@ -54,6 +54,15 @@ export function useSessions(runtimeID: string) {
     setWorkspaces(status.workspaces ?? []);
   }, []);
 
+  const refreshStatus = useCallback(
+    async (preserveActiveSession = false): Promise<ViewerStatus> => {
+      const status = await fetchViewerStatus(runtimeID);
+      applyViewerStatus(status, preserveActiveSession);
+      return status;
+    },
+    [applyViewerStatus, runtimeID],
+  );
+
   // Initial fetch — merges with any SSE data that arrived first
   useEffect(() => {
     let cancelled = false;
@@ -140,5 +149,6 @@ export function useSessions(runtimeID: string) {
     runtimes,
     workspaces,
     streamStatus,
+    refreshStatus,
   };
 }

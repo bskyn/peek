@@ -1,5 +1,11 @@
 import { normalizeSessionDetail, normalizeSessionSummary, normalizeViewerEvent, normalizeViewerStatus } from './normalize';
-import type { EventPage, SessionDetail, SessionSummary, ViewerStatus } from './types';
+import type {
+  EventPage,
+  SessionDetail,
+  SessionSummary,
+  ViewerStatus,
+  WorkspaceSwitchResponse,
+} from './types';
 
 async function requestJSON(input: string, init?: RequestInit): Promise<unknown> {
   const response = await fetch(input, init);
@@ -67,7 +73,7 @@ export async function fetchViewerStatus(runtimeID?: string): Promise<ViewerStatu
 export async function switchRuntimeWorkspace(
   runtimeID: string,
   workspaceID: string,
-): Promise<{ session_id?: string; workspace_id?: string }> {
+): Promise<WorkspaceSwitchResponse> {
   const payload = (await requestJSON(
     `/api/runtimes/${encodeURIComponent(runtimeID)}/workspaces/${encodeURIComponent(workspaceID)}/switch`,
     { method: 'POST' },

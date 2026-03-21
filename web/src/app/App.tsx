@@ -11,6 +11,95 @@ import { useSessions } from '../hooks/useSessions';
 import { switchRuntimeWorkspace } from '../lib/api';
 import { buildHeaderTitle, deriveDisplayStatus, formatDateTime } from '../lib/format';
 import { openStream } from '../lib/stream';
+import type { ViewerShellFollowHint, ViewerStatus, ViewerWorkspaceTransition } from '../lib/types';
+
+const runtimeStatusPollAttempts = 6;
+const runtimeStatusPollDelayMS = 250;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function waitForRuntimeSwitchConvergence(
+  refreshStatus: () => Promise<ViewerStatus>,
+  targetWorkspaceID: string,
+): Promise<ViewerStatus | null> {
+  let lastStatus: ViewerStatus | null = null;
+
+  for (let attempt = 0; attempt < runtimeStatusPollAttempts; attempt += 1) {
+    try {
+      const status = await refreshStatus();
+      lastStatus = status;
+      if (status.runtime?.active_workspace_id === targetWorkspaceID) {
+        return status;
+      }
+    } catch {
+      // Fall back to the switch response if the status refresh is briefly unavailable.
+    }
+
+    if (attempt < runtimeStatusPollAttempts - 1) {
+      await sleep(runtimeStatusPollDelayMS);
+    }
+  }
+
+  return lastStatus;
+}
+
+function buildShellFollowHint(runtimeID: string): ViewerShellFollowHint {
+  return {
+    runtime_id: runtimeID,
+    init_command: 'eval "$(peek shell init zsh)"',
+    attach_command: `eval "$(peek shell attach ${runtimeID})"`,
+    status_command: 'peek shell status',
+  };
+}
+
+function workspaceTransitionSummary(
+  transition: ViewerWorkspaceTransition,
+  activeWorkspaceID: string,
+): { toneClass: string; title: string; body: string } {
+  switch (transition.status) {
+    case 'idle':
+      return {
+        toneClass: 'border-surface-0 bg-mantle',
+        title: activeWorkspaceID === '' ? 'Runtime workspace is ready' : `Active workspace: ${activeWorkspaceID}`,
+        body:
+          activeWorkspaceID === ''
+            ? 'Pick a workspace to move this runtime and reroute the timeline to the resumed session.'
+            : 'Viewer switches stay scoped to this runtime lineage and reroute the timeline after the runtime settles.',
+      };
+    case 'switching':
+      return {
+        toneClass: 'border-yellow/30 bg-yellow/10',
+        title: `Switching runtime to ${transition.requested_workspace_id}`,
+        body:
+          'Waiting for the managed runtime to settle before the viewer confirms the active workspace and timeline session.',
+      };
+    case 'converged': {
+      const finalWorkspaceID =
+        transition.active_workspace_id ||
+        transition.response_workspace_id ||
+        transition.requested_workspace_id;
+      const finalSessionID = transition.active_session_id || transition.response_session_id;
+      return {
+        toneClass: 'border-green/30 bg-green/10',
+        title: `Runtime now active on ${finalWorkspaceID}`,
+        body:
+          finalSessionID != null && finalSessionID !== ''
+            ? `Timeline moved to resumed session ${finalSessionID}.`
+            : 'Runtime status refreshed and the viewer stayed on the selected runtime.',
+      };
+    }
+    case 'failed':
+      return {
+        toneClass: 'border-red/30 bg-red/10',
+        title: `Switch to ${transition.requested_workspace_id} failed`,
+        body: transition.error,
+      };
+  }
+}
 
 export function App() {
   const routerState = useRouterState();
@@ -29,8 +118,12 @@ export function App() {
     (runtimeSessionMatch?.params as Record<string, string> | undefined)?.sessionId ??
     (sessionMatch?.params as Record<string, string> | undefined)?.sessionId ??
     '';
-  const [switchError, setSwitchError] = useState('');
   const [switchingWorkspaceID, setSwitchingWorkspaceID] = useState('');
+  const [switchTransition, setSwitchTransition] = useState<ViewerWorkspaceTransition>({
+    status: 'idle',
+  });
+  const [shellCommandFeedback, setShellCommandFeedback] = useState('');
+  const workspaceSwitchRequestIDRef = useRef(0);
 
   const navigateToSession = useCallback(
     (sessionId: string) => {
@@ -70,6 +163,7 @@ export function App() {
     runtimes,
     workspaces,
     streamStatus: listStreamStatus,
+    refreshStatus,
   } = useSessions(selectedRuntimeID);
 
   const {
@@ -117,6 +211,15 @@ export function App() {
 
   const hasSession = selectedSessionID !== '';
   const showDetail = hasSession && !isLoadingDetail && detail != null;
+  const activeWorkspaceID =
+    runtime?.active_workspace_id || workspaces.find((entry) => entry.is_active)?.workspace.id || '';
+  const visibleTransition =
+    switchTransition.status === 'idle' || switchTransition.runtime_id === selectedRuntimeID
+      ? switchTransition
+      : ({ status: 'idle' } as const);
+  const shellFollowHint =
+    selectedRuntimeID === '' ? undefined : buildShellFollowHint(selectedRuntimeID);
+  const transitionSummary = workspaceTransitionSummary(visibleTransition, activeWorkspaceID);
 
   useEffect(() => {
     if (selectedRuntimeID === '' || selectedSessionID !== '' || activeSessionID === '') {
@@ -146,27 +249,85 @@ export function App() {
     });
   }, [activeSessionID, navigateToRuntime, selectedRuntimeID, selectedSessionID]);
 
+  useEffect(() => {
+    setShellCommandFeedback('');
+    setSwitchTransition((current) => {
+      if (current.status === 'idle') {
+        return current;
+      }
+      if (current.runtime_id === selectedRuntimeID) {
+        return current;
+      }
+      return { status: 'idle' };
+    });
+  }, [selectedRuntimeID]);
+
+  const handleCopyShellCommand = useCallback(async (label: string, command: string) => {
+    if (typeof navigator === 'undefined' || navigator.clipboard == null) {
+      setShellCommandFeedback(`Clipboard unavailable. Run: ${command}`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(command);
+      setShellCommandFeedback(`${label} copied to the clipboard.`);
+    } catch {
+      setShellCommandFeedback(`Copy failed. Run: ${command}`);
+    }
+  }, []);
+
   const handleWorkspaceSwitch = useCallback(
     async (workspaceId: string) => {
       if (selectedRuntimeID === '') return;
-      setSwitchError('');
+      const requestID = workspaceSwitchRequestIDRef.current + 1;
+      workspaceSwitchRequestIDRef.current = requestID;
+      setShellCommandFeedback('');
+      setSwitchTransition({
+        status: 'switching',
+        runtime_id: selectedRuntimeID,
+        requested_workspace_id: workspaceId,
+      });
       setSwitchingWorkspaceID(workspaceId);
       try {
         const result = await switchRuntimeWorkspace(selectedRuntimeID, workspaceId);
+        const status = await waitForRuntimeSwitchConvergence(refreshStatus, workspaceId);
+        if (workspaceSwitchRequestIDRef.current !== requestID) {
+          return;
+        }
+        const finalWorkspaceID = status?.runtime?.active_workspace_id || result.workspace_id;
+        const finalSessionID = status?.active_session_id || result.session_id;
+        setSwitchTransition({
+          status: 'converged',
+          runtime_id: selectedRuntimeID,
+          requested_workspace_id: workspaceId,
+          response_workspace_id: result.workspace_id,
+          response_session_id: result.session_id,
+          active_workspace_id: finalWorkspaceID,
+          active_session_id: finalSessionID,
+        });
         startTransition(() => {
-          if (result.session_id != null && result.session_id !== '') {
-            navigateToRuntime(selectedRuntimeID, result.session_id);
+          if (finalSessionID != null && finalSessionID !== '') {
+            navigateToRuntime(selectedRuntimeID, finalSessionID);
             return;
           }
           navigateToRuntime(selectedRuntimeID);
         });
       } catch (error) {
-        setSwitchError(error instanceof Error ? error.message : 'Workspace switch failed');
+        if (workspaceSwitchRequestIDRef.current !== requestID) {
+          return;
+        }
+        setSwitchTransition({
+          status: 'failed',
+          runtime_id: selectedRuntimeID,
+          requested_workspace_id: workspaceId,
+          error: error instanceof Error ? error.message : 'Workspace switch failed',
+        });
       } finally {
-        setSwitchingWorkspaceID('');
+        if (workspaceSwitchRequestIDRef.current === requestID) {
+          setSwitchingWorkspaceID('');
+        }
       }
     },
-    [navigateToRuntime, selectedRuntimeID],
+    [navigateToRuntime, refreshStatus, selectedRuntimeID],
   );
 
   const managedSidebarSessions = workspaces.flatMap((entry) =>
@@ -175,6 +336,7 @@ export function App() {
   const sidebarSessions = selectedRuntimeID !== '' ? managedSidebarSessions : sessions;
   const sidebarLabel = selectedRuntimeID !== '' ? 'Managed Runtime' : 'Sessions';
   const sidebarTitle = selectedRuntimeID !== '' ? 'Runtime sessions' : 'Recent activity';
+  const isWorkspaceSwitchPending = switchingWorkspaceID !== '';
   const emptySidebarBody =
     selectedRuntimeID !== ''
       ? 'Branches and workspace resumes for this runtime will appear here.'
@@ -293,15 +455,91 @@ export function App() {
                 Switch the active worktree for this runtime
               </h2>
             </div>
-            {switchError !== '' ? <p className="text-[11px] text-red">{switchError}</p> : null}
+            <span className="rounded-full border border-surface-0 bg-mantle px-2.5 py-1 font-mono text-[10px] text-subtext-0">
+              {selectedRuntimeID}
+            </span>
+          </div>
+          <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+            <div className={`rounded-lg border px-3 py-3 ${transitionSummary.toneClass}`}>
+              <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-overlay-0">
+                Viewer Handoff
+              </p>
+              <h3 className="mt-1 text-[12px] font-semibold text-text">{transitionSummary.title}</h3>
+              <p className="mt-2 text-[11px] leading-5 text-subtext-0">{transitionSummary.body}</p>
+              <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-overlay-0">
+                {activeWorkspaceID !== '' ? (
+                  <span className="rounded-full border border-surface-0 bg-base px-2 py-1">
+                    active workspace {activeWorkspaceID}
+                  </span>
+                ) : null}
+                {visibleTransition.status === 'converged' &&
+                visibleTransition.active_session_id != null &&
+                visibleTransition.active_session_id !== '' ? (
+                  <span className="rounded-full border border-surface-0 bg-base px-2 py-1">
+                    active session {visibleTransition.active_session_id}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            {shellFollowHint != null ? (
+              <div className="rounded-lg border border-surface-0 bg-mantle px-3 py-3">
+                <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-overlay-0">
+                  Shell Follow
+                </p>
+                <h3 className="mt-1 text-[12px] font-semibold text-text">
+                  Attached shells follow on the next prompt
+                </h3>
+                <p className="mt-2 text-[11px] leading-5 text-subtext-0">
+                  Browser switches affect only shells attached to runtime{' '}
+                  <span className="font-mono text-text">{shellFollowHint.runtime_id}</span>. Unhooked
+                  or detached shells stay in their current cwd.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void handleCopyShellCommand('Attach command', shellFollowHint.attach_command)
+                    }
+                    className="rounded-full border border-surface-0 bg-base px-2.5 py-1 text-[10px] font-medium text-subtext-0"
+                  >
+                    Copy attach
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void handleCopyShellCommand('Hook setup', shellFollowHint.init_command)
+                    }
+                    className="rounded-full border border-surface-0 bg-base px-2.5 py-1 text-[10px] font-medium text-subtext-0"
+                  >
+                    Copy setup
+                  </button>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <p className="rounded-md border border-surface-0 bg-base px-2.5 py-2 font-mono text-[10px] text-subtext-0">
+                    {shellFollowHint.attach_command}
+                  </p>
+                  <p className="rounded-md border border-surface-0 bg-base px-2.5 py-2 font-mono text-[10px] text-subtext-0">
+                    {shellFollowHint.init_command}
+                  </p>
+                  <p className="text-[10px] text-overlay-0">
+                    Verify the binding with{' '}
+                    <span className="font-mono text-subtext-0">{shellFollowHint.status_command}</span>.
+                  </p>
+                </div>
+                {shellCommandFeedback !== '' ? (
+                  <p className="mt-2 text-[10px] text-sky">{shellCommandFeedback}</p>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             {workspaces.map((entry) => {
+              const isSwitching = switchingWorkspaceID === entry.workspace.id;
               return (
                 <button
                   key={entry.workspace.id}
                   type="button"
-                  disabled={entry.is_active || switchingWorkspaceID === entry.workspace.id}
+                  disabled={entry.is_active || isWorkspaceSwitchPending}
                   onClick={() => void handleWorkspaceSwitch(entry.workspace.id)}
                   className={`rounded-lg border px-3 py-2 text-left ${
                     entry.is_active
@@ -313,6 +551,12 @@ export function App() {
                   <p className="text-[10px] uppercase tracking-[0.12em] text-overlay-0">
                     {entry.workspace.status}
                   </p>
+                  {entry.is_active ? (
+                    <p className="mt-1 text-[10px] text-lavender">active runtime workspace</p>
+                  ) : null}
+                  {isSwitching ? (
+                    <p className="mt-1 text-[10px] text-yellow">waiting for runtime handoff...</p>
+                  ) : null}
                   {entry.latest_session != null ? (
                     <p className="mt-1 text-[10px] text-subtext-0">{entry.latest_session.id}</p>
                   ) : null}
