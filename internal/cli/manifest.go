@@ -87,7 +87,11 @@ func runManifestCreate(cmd *cobra.Command, flags manifestCreateFlags) error {
 	if !resolution.IsRepoRoot {
 		fmt.Fprintf(cmd.OutOrStdout(), "Using repo root %s (invoked from %s).\n", resolution.ProjectRoot, resolution.CWD)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Created %s for %s.\n", companion.ConfigFileName, manifestTargetLabel(result.Selected))
+	if result.Template == "generic" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Created %s starter for %s.\n", companion.ConfigFileName, manifestTargetLabel(result.Selected))
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Created %s for %s.\n", companion.ConfigFileName, manifestTargetLabel(result.Selected))
+	}
 	for _, warning := range result.Warnings {
 		fmt.Fprintf(cmd.OutOrStdout(), "Warning: %s\n", warning.Message)
 	}

@@ -136,7 +136,7 @@ func runManaged(source managed.Source, extraArgs []string) error {
 			fmt.Printf("Peek runtime: %s\n\n", start.runtimeID)
 		}
 	}
-	if runtimeSpec != nil {
+	if runtimeSpec != nil && len(runtimeSpec.Services) > 0 {
 		fmt.Printf("Peek companion runtime: %s\n", runtimeSpec.ConfigSource)
 	}
 	supervisor := newManagedSupervisor(
@@ -175,8 +175,7 @@ func renderMissingProjectRuntimeMessage(err *companion.MissingProjectRuntimeErro
 	b.WriteString(companion.ConfigFileName)
 	b.WriteString(" in the repo root.\n\n")
 
-	switch {
-	case len(err.Candidates) > 1:
+	if len(err.Candidates) > 1 {
 		b.WriteString("This repo has multiple app candidates, so choose one explicitly:\n")
 		for _, candidate := range err.Candidates {
 			b.WriteString("- ")
@@ -190,26 +189,19 @@ func renderMissingProjectRuntimeMessage(err *companion.MissingProjectRuntimeErro
 		}
 		b.WriteString("\nCreate the manifest from the repo root:\n")
 		b.WriteString("  peek manifest create --service <path>\n")
-	case len(err.Candidates) == 1:
-		b.WriteString("Create the manifest from the repo root:\n")
+	} else {
+		b.WriteString("Create a generic manifest:\n")
 		b.WriteString("  peek manifest create\n")
-		b.WriteString("\nPeek found one app candidate: ")
-		b.WriteString(displayServicePath(err.Candidates[0].Path))
-		if err.Candidates[0].PackageName != "" {
-			b.WriteString(" (")
-			b.WriteString(err.Candidates[0].PackageName)
-			b.WriteString(")")
+		if len(err.Candidates) == 1 {
+			b.WriteString("\nPeek found one likely app candidate: ")
+			b.WriteString(displayServicePath(err.Candidates[0].Path))
+			if err.Candidates[0].PackageName != "" {
+				b.WriteString(" (")
+				b.WriteString(err.Candidates[0].PackageName)
+				b.WriteString(")")
+			}
+			b.WriteString("\n")
 		}
-		b.WriteString("\n")
-	case err.PackageManager != companion.PackageManagerUnknown:
-		b.WriteString("Peek could not find a package.json with a dev script in the repo root or declared workspaces.\n\n")
-		b.WriteString("Run `peek manifest create` after adding the app package, or create ")
-		b.WriteString(companion.ConfigFileName)
-		b.WriteString(" manually.\n")
-	default:
-		b.WriteString("Create the manifest first:\n")
-		b.WriteString("  peek manifest create\n\n")
-		b.WriteString("Peek manifest scaffolding supports JS/TS repos with package.json#packageManager or a pnpm/npm/yarn/bun lockfile.\n")
 	}
 
 	b.WriteString("\nThen rerun:\n")

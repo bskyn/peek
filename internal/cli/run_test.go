@@ -18,8 +18,9 @@ func TestRenderMissingProjectRuntimeMessageForRootApp(t *testing.T) {
 
 	for _, want := range []string{
 		"Managed runs require an explicit peek.runtime.json",
+		"Create a generic manifest:",
 		"peek manifest create",
-		"Peek found one app candidate: . (root-web)",
+		"Peek found one likely app candidate: . (root-web)",
 		"peek run claude",
 		"peek run codex",
 	} {
@@ -43,6 +44,24 @@ func TestRenderMissingProjectRuntimeMessageForMonorepo(t *testing.T) {
 		"apps/core (core)",
 		"apps/xyz (xyz)",
 		"peek manifest create --service <path>",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("expected message to contain %q, got:\n%s", want, message)
+		}
+	}
+}
+
+func TestRenderMissingProjectRuntimeMessageForGenericRepo(t *testing.T) {
+	message := renderMissingProjectRuntimeMessage(&companion.MissingProjectRuntimeError{
+		ProjectDir: "/repo",
+	}, &projectRootResolution{CWD: "/repo", ProjectRoot: "/repo", IsRepoRoot: true})
+
+	for _, want := range []string{
+		"Managed runs require an explicit peek.runtime.json",
+		"Create a generic manifest:",
+		"peek manifest create",
+		"peek run claude",
+		"peek run codex",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("expected message to contain %q, got:\n%s", want, message)

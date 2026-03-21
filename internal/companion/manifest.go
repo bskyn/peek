@@ -49,6 +49,8 @@ type ServiceCandidate struct {
 	Path            string
 	PackageName     string
 	PackageJSONPath string
+	PackageManager  PackageManagerKind
+	LockfilePath    string
 	Framework       string
 	Score           int
 	ReadyURL        string
@@ -67,6 +69,7 @@ type ManifestCreateResult struct {
 	Spec     *ProjectRuntimeSpec
 	Rendered []byte
 	Selected ServiceCandidate
+	Template string
 	Warnings []ManifestWarning
 }
 
@@ -142,16 +145,12 @@ func CreateManifest(opts ManifestCreateOptions) (*ManifestCreateResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if inspection.PackageManager == PackageManagerUnknown {
-		return nil, fmt.Errorf("could not determine a supported package manager; `peek manifest create` supports JS/TS repos with package.json#packageManager or a pnpm/npm/yarn/bun lockfile")
-	}
-
-	candidate, err := selectManifestCandidate(inspection, opts.ServicePath)
+	candidate, selected, err := selectManifestCandidate(inspection, opts.ServicePath)
 	if err != nil {
 		return nil, err
 	}
 
-	spec, warnings, err := buildGeneratedRuntimeSpec(inspection, candidate)
+	spec, template, warnings, err := buildGeneratedRuntimeSpec(inspection, candidate, selected)
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +163,7 @@ func CreateManifest(opts ManifestCreateOptions) (*ManifestCreateResult, error) {
 		Spec:     spec,
 		Rendered: rendered,
 		Selected: candidate,
+		Template: template,
 		Warnings: warnings,
 	}, nil
 }
@@ -196,11 +196,15 @@ func loadRootPackageJSON(projectDir string) (*packageJSON, bool, error) {
 }
 
 func detectPackageManager(projectDir string, rootPkg *packageJSON) (PackageManagerKind, string, string) {
+	return detectPackageManagerForDir(projectDir, "", rootPkg)
+}
+
+func detectPackageManagerForDir(projectDir, relDir string, pkg *packageJSON) (PackageManagerKind, string, string) {
 	manager := parsePackageManagerField("")
-	if rootPkg != nil {
-		manager = parsePackageManagerField(rootPkg.PackageManager)
+	if pkg != nil {
+		manager = parsePackageManagerField(pkg.PackageManager)
 	}
-	lockfiles := presentLockfiles(projectDir)
+	lockfiles := presentLockfiles(projectDir, relDir)
 	if manager != PackageManagerUnknown {
 		for _, candidate := range lockfiles {
 			if candidate.kind == manager {
@@ -232,7 +236,7 @@ func parsePackageManagerField(raw string) PackageManagerKind {
 	}
 }
 
-func presentLockfiles(projectDir string) []struct {
+func presentLockfiles(projectDir, relDir string) []struct {
 	path string
 	kind PackageManagerKind
 } {
@@ -252,8 +256,12 @@ func presentLockfiles(projectDir string) []struct {
 		kind PackageManagerKind
 	}, 0, len(candidates))
 	for _, candidate := range candidates {
-		if _, err := os.Stat(filepath.Join(projectDir, candidate.path)); err == nil {
-			result = append(result, candidate)
+		candidatePath := joinRepoPath(relDir, candidate.path)
+		if _, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(candidatePath))); err == nil {
+			result = append(result, struct {
+				path string
+				kind PackageManagerKind
+			}{path: candidatePath, kind: candidate.kind})
 		}
 	}
 	return result
@@ -332,7 +340,7 @@ func extractWorkspaceGlobs(raw json.RawMessage) []string {
 func discoverServiceCandidates(projectDir string, repoKind RepoKind, patterns workspacePatterns, rootPkg *packageJSON, rootPkgPresent bool) ([]ServiceCandidate, error) {
 	candidates := make([]ServiceCandidate, 0, 4)
 	if rootPkgPresent && hasDevScript(*rootPkg) {
-		candidates = append(candidates, buildServiceCandidate("", *rootPkg))
+		candidates = append(candidates, buildServiceCandidate(projectDir, "", *rootPkg))
 	}
 	if repoKind != RepoKindWorkspace {
 		return candidates, nil
@@ -374,7 +382,7 @@ func discoverServiceCandidates(projectDir string, repoKind RepoKind, patterns wo
 			return nil
 		}
 
-		candidates = append(candidates, buildServiceCandidate(relDir, pkg))
+		candidates = append(candidates, buildServiceCandidate(projectDir, relDir, pkg))
 		return nil
 	})
 	if err != nil {
@@ -387,17 +395,37 @@ func hasDevScript(pkg packageJSON) bool {
 	return pkg.Scripts != nil && strings.TrimSpace(pkg.Scripts["dev"]) != ""
 }
 
-func buildServiceCandidate(relDir string, pkg packageJSON) ServiceCandidate {
+func buildServiceCandidate(projectDir, relDir string, pkg packageJSON) ServiceCandidate {
 	framework := detectFramework(pkg)
 	readyURL := defaultReadyURL(framework)
+	manager, _, lockfile := detectPackageManagerForDir(projectDir, relDir, &pkg)
 	return ServiceCandidate{
 		Path:            relDir,
 		PackageName:     pkg.Name,
 		PackageJSONPath: joinRepoPath(relDir, "package.json"),
+		PackageManager:  manager,
+		LockfilePath:    lockfile,
 		Framework:       framework,
 		Score:           candidateScore(relDir, pkg, framework),
 		ReadyURL:        readyURL,
 	}
+}
+
+func loadPackageJSON(projectDir, relDir string) (packageJSON, bool, error) {
+	fullPath := filepath.Join(projectDir, filepath.FromSlash(joinRepoPath(relDir, "package.json")))
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return packageJSON{}, false, nil
+		}
+		return packageJSON{}, false, fmt.Errorf("read %s: %w", joinRepoPath(relDir, "package.json"), err)
+	}
+
+	var pkg packageJSON
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return packageJSON{}, false, nil
+	}
+	return pkg, true, nil
 }
 
 func detectFramework(pkg packageJSON) string {
@@ -501,31 +529,41 @@ func workspaceMatches(relDir string, patterns workspacePatterns) bool {
 	return true
 }
 
-func selectManifestCandidate(inspection *ProjectInspection, servicePath string) (ServiceCandidate, error) {
+func selectManifestCandidate(inspection *ProjectInspection, servicePath string) (ServiceCandidate, bool, error) {
 	if inspection == nil {
-		return ServiceCandidate{}, fmt.Errorf("project inspection is required")
-	}
-	if len(inspection.Candidates) == 0 {
-		return ServiceCandidate{}, fmt.Errorf("could not find a package.json with a dev script in the repo root or declared workspaces")
+		return ServiceCandidate{}, false, fmt.Errorf("project inspection is required")
 	}
 
 	if strings.TrimSpace(servicePath) != "" {
 		if err := validateRelativePath(servicePath, "--service"); err != nil {
-			return ServiceCandidate{}, err
+			return ServiceCandidate{}, false, err
 		}
 		normalized := normalizeRepoPath(servicePath)
 		for _, candidate := range inspection.Candidates {
 			if candidate.Path == normalized {
-				return candidate, nil
+				return candidate, true, nil
 			}
 		}
-		return ServiceCandidate{}, fmt.Errorf("service %q was not found; available candidates: %s", displayRepoPath(normalized), strings.Join(candidatePaths(inspection.Candidates), ", "))
+		pkg, ok, err := loadPackageJSON(inspection.ProjectDir, normalized)
+		if err != nil {
+			return ServiceCandidate{}, false, err
+		}
+		if ok && hasDevScript(pkg) {
+			return buildServiceCandidate(inspection.ProjectDir, normalized, pkg), true, nil
+		}
+		if len(inspection.Candidates) > 0 {
+			return ServiceCandidate{}, false, fmt.Errorf("service %q was not found; available candidates: %s", displayRepoPath(normalized), strings.Join(candidatePaths(inspection.Candidates), ", "))
+		}
+		return ServiceCandidate{Path: normalized}, false, nil
 	}
 
 	if len(inspection.Candidates) > 1 {
-		return ServiceCandidate{}, &AmbiguousManifestError{Candidates: inspection.Candidates}
+		return ServiceCandidate{}, false, &AmbiguousManifestError{Candidates: inspection.Candidates}
 	}
-	return inspection.Candidates[0], nil
+	if len(inspection.Candidates) == 1 {
+		return inspection.Candidates[0], true, nil
+	}
+	return ServiceCandidate{}, false, nil
 }
 
 func candidatePaths(candidates []ServiceCandidate) []string {
@@ -536,17 +574,41 @@ func candidatePaths(candidates []ServiceCandidate) []string {
 	return paths
 }
 
-func buildGeneratedRuntimeSpec(inspection *ProjectInspection, candidate ServiceCandidate) (*ProjectRuntimeSpec, []ManifestWarning, error) {
+func buildGeneratedRuntimeSpec(inspection *ProjectInspection, candidate ServiceCandidate, selected bool) (*ProjectRuntimeSpec, string, []ManifestWarning, error) {
+	if manager, lockfilePath, installWorkdir, ok := resolveNodeScaffold(inspection, candidate, selected); ok {
+		spec, warnings, err := buildNodeRuntimeSpec(inspection, candidate, manager, lockfilePath, installWorkdir)
+		return spec, "node", warnings, err
+	}
+
+	spec, warnings, err := buildGenericRuntimeSpec(candidate)
+	return spec, "generic", warnings, err
+}
+
+func resolveNodeScaffold(inspection *ProjectInspection, candidate ServiceCandidate, selected bool) (PackageManagerKind, string, string, bool) {
+	if !selected || inspection == nil {
+		return PackageManagerUnknown, "", "", false
+	}
+	if candidate.PackageManager != PackageManagerUnknown {
+		return candidate.PackageManager, candidate.LockfilePath, candidate.Path, true
+	}
+	if inspection.PackageManager == PackageManagerUnknown {
+		return PackageManagerUnknown, "", "", false
+	}
+	return inspection.PackageManager, inspection.LockfilePath, "", true
+}
+
+func buildNodeRuntimeSpec(inspection *ProjectInspection, candidate ServiceCandidate, manager PackageManagerKind, lockfilePath, installWorkdir string) (*ProjectRuntimeSpec, []ManifestWarning, error) {
 	serviceName := serviceNameForCandidate(candidate)
 	spec := &ProjectRuntimeSpec{
 		Bootstrap: BootstrapSpec{
 			FingerprintPaths: compactPaths([]string{
-				inspection.LockfilePath,
+				lockfilePath,
 				rootPackageJSONPath(inspection),
 				candidate.PackageJSONPath,
 			}),
 			Commands: []CommandSpec{{
-				Command: buildInstallCommand(inspection.PackageManager, inspection.LockfilePath != ""),
+				Workdir: installWorkdir,
+				Command: buildInstallCommand(manager, lockfilePath != ""),
 			}},
 		},
 		EnvSources: existingEnvSources(inspection.ProjectDir, candidate.Path),
@@ -554,7 +616,7 @@ func buildGeneratedRuntimeSpec(inspection *ProjectInspection, candidate ServiceC
 			Name:    serviceName,
 			Role:    ServiceRolePrimary,
 			Workdir: candidate.Path,
-			Command: buildDevCommand(inspection.PackageManager),
+			Command: buildDevCommand(manager),
 			Env: map[string]string{
 				"HOST": "127.0.0.1",
 			},
@@ -577,6 +639,19 @@ func buildGeneratedRuntimeSpec(inspection *ProjectInspection, candidate ServiceC
 	var warnings []ManifestWarning
 	if len(spec.EnvSources) == 0 {
 		warnings = append(warnings, ManifestWarning{Message: "no existing .env files were detected; add env_sources if your app needs them"})
+	}
+	return spec, warnings, nil
+}
+
+func buildGenericRuntimeSpec(candidate ServiceCandidate) (*ProjectRuntimeSpec, []ManifestWarning, error) {
+	spec := &ProjectRuntimeSpec{}
+	if err := spec.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("validate generated manifest: %w", err)
+	}
+
+	warnings := []ManifestWarning{
+		{Message: "generic starter manifest generated; managed runs will not start an app until you add a services entry"},
+		{Message: "add bootstrap commands, env_sources, and browser settings only if this repo needs a managed companion app"},
 	}
 	return spec, warnings, nil
 }

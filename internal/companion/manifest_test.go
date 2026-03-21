@@ -78,6 +78,9 @@ func TestCreateManifestSupportsPackageManagers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create manifest: %v", err)
 			}
+			if result.Template != "node" {
+				t.Fatalf("template = %q, want node", result.Template)
+			}
 			if got := result.Spec.Bootstrap.Commands[0].Command; !reflect.DeepEqual(got, tc.wantInstallCmd) {
 				t.Fatalf("install command = %v, want %v", got, tc.wantInstallCmd)
 			}
@@ -91,6 +94,90 @@ func TestCreateManifestSupportsPackageManagers(t *testing.T) {
 				t.Fatalf("expected rendered manifest to end with newline")
 			}
 		})
+	}
+}
+
+func TestCreateManifestFallsBackToGenericStarter(t *testing.T) {
+	projectDir := t.TempDir()
+	writeRepoFile(t, projectDir, "go.mod", "module github.com/example/app\n")
+
+	result, err := CreateManifest(ManifestCreateOptions{ProjectDir: projectDir})
+	if err != nil {
+		t.Fatalf("create generic manifest: %v", err)
+	}
+	if result.Template != "generic" {
+		t.Fatalf("template = %q, want generic", result.Template)
+	}
+	if len(result.Spec.Services) != 0 {
+		t.Fatalf("expected no services in generic starter, got %v", result.Spec.Services)
+	}
+	if len(result.Warnings) < 2 {
+		t.Fatalf("expected generic warnings, got %v", result.Warnings)
+	}
+}
+
+func TestCreateManifestUsesGenericStarterForMixedRepoByDefault(t *testing.T) {
+	projectDir := t.TempDir()
+	writeRepoFile(t, projectDir, "package.json", `{
+  "name": "fixture-root"
+}`)
+	writeRepoFile(t, projectDir, "web/package.json", `{
+  "name": "peek-web",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {"dev": "vite"},
+  "devDependencies": {"vite": "^6.0.0"}
+}`)
+	writeRepoFile(t, projectDir, "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+
+	result, err := CreateManifest(ManifestCreateOptions{ProjectDir: projectDir})
+	if err != nil {
+		t.Fatalf("create generic manifest for mixed repo: %v", err)
+	}
+	if result.Template != "generic" {
+		t.Fatalf("template = %q, want generic", result.Template)
+	}
+	if len(result.Spec.Services) != 0 {
+		t.Fatalf("expected no default service, got %v", result.Spec.Services)
+	}
+}
+
+func TestCreateManifestDetectsExplicitNestedNodeApp(t *testing.T) {
+	projectDir := t.TempDir()
+	writeRepoFile(t, projectDir, "package.json", `{
+  "name": "fixture-root"
+}`)
+	writeRepoFile(t, projectDir, "web/package.json", `{
+  "name": "peek-web",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {"dev": "vite"},
+  "devDependencies": {"vite": "^6.0.0"}
+}`)
+	writeRepoFile(t, projectDir, "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+
+	result, err := CreateManifest(ManifestCreateOptions{
+		ProjectDir:  projectDir,
+		ServicePath: "web",
+	})
+	if err != nil {
+		t.Fatalf("create manifest for explicit nested node app: %v", err)
+	}
+	if result.Template != "node" {
+		t.Fatalf("template = %q, want node", result.Template)
+	}
+	if got := result.Selected.Path; got != "web" {
+		t.Fatalf("selected path = %q, want web", got)
+	}
+	if got := result.Spec.Bootstrap.Commands[0].Workdir; got != "web" {
+		t.Fatalf("bootstrap workdir = %q, want web", got)
+	}
+	if got := result.Spec.Services[0].Workdir; got != "web" {
+		t.Fatalf("service workdir = %q, want web", got)
+	}
+	if got := strings.Join(result.Spec.Services[0].Command, " "); got != "pnpm dev" {
+		t.Fatalf("service command = %q, want pnpm dev", got)
+	}
+	if got := result.Spec.Bootstrap.FingerprintPaths; !reflect.DeepEqual(got, []string{"web/pnpm-lock.yaml", "package.json", "web/package.json"}) {
+		t.Fatalf("fingerprint paths = %v", got)
 	}
 }
 

@@ -40,17 +40,12 @@ peek manifest create --stdout
 # Write ./peek.runtime.json
 peek manifest create
 
-# Monorepo: choose the app explicitly
+# Monorepo or multi-app repo: choose the app explicitly
 peek manifest create --service apps/core
+
+# Mixed repo with a nested Node app
+peek manifest create --service web
 ```
-
-`peek manifest create` supports:
-
-- single-package JS/TS repos with a root `package.json` and `dev` script
-- monorepos declared through root workspaces or `pnpm-workspace.yaml`
-- `pnpm`, `npm`, `yarn`, and `bun`
-
-If the scaffold is close but not perfect, edit `peek.runtime.json` and rerun. Managed runs require this file.
 
 Start a managed session:
 

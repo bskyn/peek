@@ -84,7 +84,7 @@ func newManagedSupervisor(st *store.Store, rt *viewer.Runtime, orch *managed.Orc
 		activeSessionID:   activeSessionID,
 		launch:            launch,
 	}
-	if companionSpec != nil {
+	if companionSpec != nil && len(companionSpec.Services) > 0 {
 		supervisor.companionMgr = companion.NewManager(
 			st,
 			projectDir,

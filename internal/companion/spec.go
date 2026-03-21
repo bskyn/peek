@@ -191,13 +191,13 @@ func (s *ProjectRuntimeSpec) Validate() error {
 		}
 	}
 
-	if s.Browser.PathPrefix == "" {
-		s.Browser.PathPrefix = "/app/"
-	}
-	if !strings.HasPrefix(s.Browser.PathPrefix, "/") {
-		return fmt.Errorf("browser.path_prefix must start with /")
-	}
 	if len(s.Services) > 0 {
+		if s.Browser.PathPrefix == "" {
+			s.Browser.PathPrefix = "/app/"
+		}
+		if !strings.HasPrefix(s.Browser.PathPrefix, "/") {
+			return fmt.Errorf("browser.path_prefix must start with /")
+		}
 		if s.Browser.Service == "" {
 			for _, service := range s.Services {
 				if service.Role == ServiceRolePrimary {
@@ -212,6 +212,8 @@ func (s *ProjectRuntimeSpec) Validate() error {
 		if _, ok := serviceNames[s.Browser.Service]; !ok {
 			return fmt.Errorf("browser.service %q does not match a configured service", s.Browser.Service)
 		}
+	} else if s.Browser.Service != "" || s.Browser.PathPrefix != "" {
+		return fmt.Errorf("browser settings require at least one configured service")
 	}
 
 	return nil

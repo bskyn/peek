@@ -69,6 +69,30 @@ func TestManifestCreateRejectsForceWithStdout(t *testing.T) {
 	}
 }
 
+func TestManifestCreateWritesGenericStarter(t *testing.T) {
+	projectDir := t.TempDir()
+	writeCLITestFile(t, projectDir, "go.mod", "module github.com/example/app\n")
+
+	output, err := runRootCommandForTest(t, projectDir, "manifest", "create")
+	if err != nil {
+		t.Fatalf("run manifest create: %v", err)
+	}
+	if !strings.Contains(output, "Created peek.runtime.json starter for the repo root app.") {
+		t.Fatalf("unexpected output: %q", output)
+	}
+	if !strings.Contains(output, "generic starter manifest generated") {
+		t.Fatalf("expected generic warning, got %q", output)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "peek.runtime.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	manifest := string(data)
+	if strings.Contains(manifest, `"services"`) {
+		t.Fatalf("expected generic starter without services, got %s", manifest)
+	}
+}
+
 func TestManifestCreateListsCandidatesForAmbiguousWorkspace(t *testing.T) {
 	projectDir := t.TempDir()
 	writeCLITestFile(t, projectDir, "package.json", `{
@@ -117,6 +141,69 @@ func TestManifestCreateReportsRootAppTarget(t *testing.T) {
 	}
 	if !strings.Contains(output, "Created peek.runtime.json for the repo root app (root-web).") {
 		t.Fatalf("unexpected output: %q", output)
+	}
+}
+
+func TestManifestCreateUsesGenericStarterForMixedRepoByDefault(t *testing.T) {
+	projectDir := t.TempDir()
+	writeCLITestFile(t, projectDir, "package.json", `{
+  "name": "fixture-root"
+}`)
+	writeCLITestFile(t, projectDir, "web/package.json", `{
+  "name": "peek-web",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {"dev": "vite"},
+  "devDependencies": {"vite": "^6.0.0"}
+}`)
+	writeCLITestFile(t, projectDir, "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+
+	output, err := runRootCommandForTest(t, projectDir, "manifest", "create")
+	if err != nil {
+		t.Fatalf("run manifest create: %v", err)
+	}
+	if !strings.Contains(output, "Created peek.runtime.json starter for the repo root app.") {
+		t.Fatalf("unexpected output: %q", output)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "peek.runtime.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	manifest := string(data)
+	if strings.Contains(manifest, `"services"`) {
+		t.Fatalf("expected generic starter without services, got %s", manifest)
+	}
+}
+
+func TestManifestCreateDetectsExplicitNestedNodeApp(t *testing.T) {
+	projectDir := t.TempDir()
+	writeCLITestFile(t, projectDir, "package.json", `{
+  "name": "fixture-root"
+}`)
+	writeCLITestFile(t, projectDir, "web/package.json", `{
+  "name": "peek-web",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {"dev": "vite"},
+  "devDependencies": {"vite": "^6.0.0"}
+}`)
+	writeCLITestFile(t, projectDir, "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+
+	output, err := runRootCommandForTest(t, projectDir, "manifest", "create", "--service", "web")
+	if err != nil {
+		t.Fatalf("run manifest create --service web: %v", err)
+	}
+	if !strings.Contains(output, "Created peek.runtime.json for web (peek-web).") {
+		t.Fatalf("unexpected output: %q", output)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "peek.runtime.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	manifest := string(data)
+	if !strings.Contains(manifest, `"workdir": "web"`) {
+		t.Fatalf("expected nested web workdir, got %s", manifest)
+	}
+	if !strings.Contains(manifest, `"command": [`) || !strings.Contains(manifest, `"pnpm"`) {
+		t.Fatalf("expected pnpm scaffold, got %s", manifest)
 	}
 }
 
