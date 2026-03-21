@@ -29,289 +29,123 @@ make build
 
 ### Managed sessions
 
-Launch a Peek-managed agent session with full workspace lifecycle control:
+Managed sessions workflow: keep Claude or Codex in one terminal, branch or switch workspaces from another terminal, and inspect everything in the local viewer.
+
+Before the first managed run, create a repo-local manifest. Peek resolves the repo root automatically and writes `peek.runtime.json` there.
 
 ```sh
-# Launch a managed Claude session
-peek run claude
+# Preview the generated manifest
+peek manifest create --stdout
 
-# Launch a managed Codex session
+# Write ./peek.runtime.json
+peek manifest create
+
+# Monorepo: choose the app explicitly
+peek manifest create --service apps/core
+```
+
+`peek manifest create` supports:
+
+- single-package JS/TS repos with a root `package.json` and `dev` script
+- monorepos declared through root workspaces or `pnpm-workspace.yaml`
+- `pnpm`, `npm`, `yarn`, and `bun`
+
+If the scaffold is close but not perfect, edit `peek.runtime.json` and rerun. Managed runs require this file.
+
+Start a managed session:
+
+```sh
+peek run claude
 peek run codex
 
-# Pass extra arguments to the underlying CLI
+# Pass reusable provider flags only
 peek run claude -- --model sonnet
 peek run codex -- --model o4-mini
 
-# Reattach a specific stopped managed runtime
+# Reattach a stopped runtime
 peek run claude --runtime-id rt-abc123
-
-# Disable the web viewer
-peek run claude --no-web
 ```
 
-Managed mode only accepts reusable provider options after `--`. Do not pass an initial prompt or provider subcommand there, because Peek needs to relaunch the same interactive session shape on branch/switch.
-
-Managed mode creates a workspace, tracks checkpoints around tool execution, and enables branching, freezing, switching, and merging.
-
-`peek run` keeps ownership of the live terminal. When you branch or switch, use a second terminal to send the control request while the original `peek run` process stays in charge of the provider CLI.
-
-#### Workspace-bound companions
-
-Peek can also keep one browser-facing companion runtime aligned with the active managed workspace. Companion services are now owned by the managed runtime instead of the `peek run` process, so they can survive agent exit and be reattached by a later managed session for the same runtime.
-
-If no companion runtime resolves, managed mode still opens the Peek viewer and workspace controls. You only lose the proxied `/r/<runtime-id>/app/` app surface.
-
-- The model is single-active-workspace per lineage. Peek stops the previous workspace’s companion services before starting the next workspace’s services.
-- The first managed runtime for a checkout reuses the current repo root. A second live runtime against the same checkout gets its own isolated root worktree automatically.
-- Peek allocates internal companion ports per runtime and serves the app through runtime-scoped URLs such as `/r/<runtime-id>/app/` instead of exposing raw ports.
-- Ignore-only assets such as `.env.local` can be materialized into branch worktrees from the root checkout without storing secret values in the Peek database.
-- Bootstrap commands are fingerprinted. If lockfiles and materialized env inputs have not changed, Peek reuses the last successful bootstrap state instead of reinstalling dependencies on every switch.
-- If activation fails during bootstrap or service readiness, the branch or switch request fails and the managed runtime stays on the previous workspace.
-
-Peek resolves companion runtimes in this order:
-
-1. `peek.runtime.json` in the repo root
-2. Frontend autodetection for Node repos with a lockfile plus a `package.json` containing a `dev` script
-
-Autodetection assumptions are intentionally narrow:
-
-- `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock` determines the package manager
-- single-package repos can autodetect from the root `package.json`; nested app candidates are only considered when the root `package.json` declares workspaces
-- the primary app is the best workspace `package.json` candidate with a `dev` script, preferring `apps/web`, `frontend`, and `web`
-- bootstrap is `pnpm install`, `npm ci`, or `yarn install`
-- browser readiness defaults to `http://127.0.0.1:5173/`, or `http://127.0.0.1:3000/` for Next.js
-
-When those assumptions are wrong, add an explicit manifest. Peek will rewrite localhost ports per runtime, so manifests should describe the service target shape rather than assume one global port:
-
-```json
-{
-  "bootstrap": {
-    "fingerprint_paths": ["pnpm-lock.yaml", "apps/web/package.json"],
-    "commands": [
-      {
-        "command": ["pnpm", "install", "--frozen-lockfile"]
-      }
-    ]
-  },
-  "env_sources": [{ "path": ".env.local" }],
-  "services": [
-    {
-      "name": "web",
-      "role": "primary",
-      "workdir": "apps/web",
-      "command": ["pnpm", "--dir", "apps/web", "dev"],
-      "env": {
-        "HOST": "127.0.0.1",
-        "PORT": "4173"
-      },
-      "ready": {
-        "type": "http",
-        "url": "http://127.0.0.1:4173/",
-        "timeout_seconds": 45
-      }
-    }
-  ],
-  "browser": {
-    "service": "web",
-    "path_prefix": "/app/"
-  }
-}
-```
-
-### Branching and workspaces
-
-Branch from any event sequence to explore alternate paths. Run `peek run ...` in one terminal, then issue branch/switch requests from another terminal. The source workspace freezes and the live managed terminal relaunches into the selected workspace:
+Use a second terminal to inspect and control the live runtime:
 
 ```sh
-# Terminal A: keep the live managed session open
-peek run claude
 
-# Terminal B: inspect and control the live managed runtime
-
-# List workspaces
-peek workspace list
-
-# Branch from workspace ws-abc123 at event sequence 5
-peek workspace branch ws-abc123 5
-
-# Switch to a workspace (re-materializes if frozen)
-peek workspace switch ws-def456
-
-# Freeze a workspace
-peek workspace freeze ws-abc123
-
-# Merge a branch back into its parent
-peek workspace merge ws-def456
-
-# Dematerialize a frozen workspace to ref-only storage
-peek workspace cool ws-abc123
-
-# Delete an inactive branch workspace, or prune a stopped root lineage
-peek workspace delete ws-abc123
-
-# Sweep stopped stale root lineages for the current repo
-peek workspace prune
-
-# Show workspace details, lineage, and children
-peek workspace status ws-abc123
-```
-
-The `workspace` command is aliased as `ws` for convenience:
-
-```sh
 peek ws list
-peek ws branch ws-abc123 5
+peek ws branch ws-root 5
+peek ws switch ws-abc123
+peek ws freeze ws-abc123
+peek ws merge ws-abc123
+peek ws cool ws-abc123
 peek ws status ws-abc123
+peek ws delete ws-abc123
+peek ws prune
 ```
 
-For multi-panel work, run `peek run ...` in two terminals from the same repo. The first runtime keeps the current checkout; the second runtime gets an isolated root worktree seeded from the live checkout state and its own `/r/<runtime-id>/app/` route.
+Notes:
 
-The viewer is runtime-aware in managed mode:
+- `peek run` keeps ownership of the live provider terminal.
+- The first runtime reuses the current checkout; a second runtime in the same repo gets an isolated root worktree.
+- Branching captures code state around tool execution so you can iterate from earlier points in the chat.
+- Companion app services are owned by the managed runtime and stay aligned with the active workspace.
 
-- each managed run opens at `/r/<runtime-id>/...`
-- the session list is scoped to that runtime lineage
-- the viewer can switch the runtime between its managed workspaces
-- refreshing `/r/<runtime-id>/app/` always resolves the current app target for that runtime
+### Session management
 
-#### Branch semantics
-
-- **Branch from a `tool_call`**: resolves to the pre-result code snapshot, so the child workspace starts from the state before the tool modified files.
-- **Branch from a later card**: resolves to the latest completed post-tool snapshot at or before the selected sequence.
-- **Freeze/switch**: the source workspace freezes on branch. `peek workspace switch` freezes the currently active sibling and hands the live managed terminal back to the target workspace in place.
-- **Merge**: merges the branch's current worktree state into the parent workspace. On conflict, Peek stops and reports the target worktree path for manual resolution.
-- **Delete/prune**: `peek workspace delete <id>` deletes ordinary inactive branch workspaces. If `<id>` is a root workspace, Peek prunes the entire stopped lineage instead, but refuses the root that still owns the current checkout lease. `peek workspace prune` does the same sweep automatically for all stopped stale roots in the current repo.
-- **Cool**: dematerializes inactive worktrees down to hidden git refs. Switch re-materializes on demand.
-- **Delete**: removes an inactive branch workspace, including its linked git worktree. For root workspaces, delete delegates to the stopped-lineage prune flow. Active workspaces and parents with children are still rejected.
-
-### Shell integration
-
-Shell hooks let attached shells auto-follow the active workspace for a managed runtime. Without hooks, `peek workspace branch` and `peek workspace switch` still work but won't move your shell's working directory.
-
-#### One-time setup
-
-Add to your `.zshrc` (or `.bashrc`):
+Use these commands to inspect, reload, or delete stored sessions:
 
 ```sh
-eval "$(peek shell init zsh)"   # or bash
+peek sessions list
+
+# Delete one session
+peek sessions delete aa961bad-c727-4479-ac42-8d1db8bdf261
+
+# Delete everything
+peek sessions delete --all
+
+# Reload Claude and Codex sessions from disk
+peek sessions load --all
 ```
 
-This installs a `peek` wrapper function and a prompt-time sync hook.
+### Viewer mode
 
-#### Attaching to a runtime
-
-After `peek run claude` starts, attach one or more shells to its runtime:
+Peek starts the local browser viewer by default for both managed runs and passive monitoring.
 
 ```sh
-# List runtimes to find the ID
-peek workspace list
-
-# Attach this shell to a runtime (sets PEEK_RUNTIME_ID)
-eval "$(peek shell attach rt-abc123)"
-
-# Check attachment status
-peek shell status
-```
-
-#### Auto-follow on branch and switch
-
-Once attached and hooked, `peek workspace branch` and `peek workspace switch` automatically move the calling shell to the new worktree. Other attached shells converge on the next prompt:
-
-```sh
-# Shell A: branch — shell A moves to the new worktree immediately
-peek workspace branch ws-abc123 5
-
-# Shell B: at the next prompt, auto-follows to the same worktree
-```
-
-#### Pin and unpin for review
-
-Pin a shell to hold it in its current worktree while other attached shells continue to follow:
-
-```sh
-# Pin this shell (stays put on branch/switch)
-eval "$(peek shell pin)"
-
-# Unpin to resume auto-following
-eval "$(peek shell unpin)"
-```
-
-This is useful for keeping a review or merge panel on the root workspace while coding shells follow the active branch.
-
-#### Detach
-
-```sh
-eval "$(peek shell detach)"
-```
-
-#### Without hooks
-
-When hooks are not sourced, all `peek workspace` commands still work and print human-readable output. The only difference is that your shell won't cd automatically — you'll need to `cd` to the printed worktree path manually.
-
-### Monitoring existing sessions
-
-Monitor sessions started outside of Peek. Start the agent in one terminal, then in another:
-
-<details>
-<summary>Passive monitoring commands</summary>
-
-```sh
-# Auto-discover the latest active Claude or Codex session
+# Passive monitoring
 peek claude
 peek codex
 
-# Monitor a specific session by ID
+# Monitor a specific session
 peek claude 75c5194d-ea16-4b91-99cf-3d321d111a51
 peek codex 019cc0a5-6911-7123-b2ff-a4848ccd6e79
-
-# Reload all sessions from disk
-peek claude load --all
-peek codex load --all
 
 # Replay from the beginning
 peek claude --replay
 peek codex --replay
 
-# Disable the web viewer
+# Disable the viewer or choose a port
 peek claude --no-web
-peek codex --no-web
-
-# Custom viewer port
-peek claude --replay --web-port 4317
 peek codex --open-browser=false --web-port 4317
 ```
 
-Codex sessions are discovered from `~/.codex/sessions/`. Set `CODEX_HOME` to override the base directory.
+Managed-mode viewer behavior:
 
-</details>
+- each managed run gets a runtime-scoped route
+- the session list is scoped to that runtime lineage
+- the app surface follows the active managed workspace
 
-### Session management
-
-```sh
-peek sessions list
-
-# Delete one session by ID
-peek sessions delete aa961bad-c727-4479-ac42-8d1db8bdf261
-
-# Delete all sessions
-peek sessions delete --all
-
-# Reload all Claude and Codex sessions from disk
-peek sessions load --all
-```
-
-## Development
+### Development
 
 ```sh
 # Install frontend dependencies once
 make install
 
-# Build the embedded web app and CLI
+# Build CLI + embedded web app
 make build
 
 # Run tests
 make test
 
-# Lint (installs the pinned golangci-lint version into ./bin if needed)
+# Lint
 make lint
 
 # Run from source

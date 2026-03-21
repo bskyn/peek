@@ -37,3 +37,23 @@ Codex `apply_patch` tool calls are split by the Go parser into per-file events w
 - `sed -i ''` (empty string for backup suffix) is required on macOS
 - `cat -A` doesn't exist on macOS — use `cat -vet` for visible whitespace
 - Always use `/g` flag for global replacement — default is first match per line only
+
+## Cross-Provider Bug Auditing
+
+When fixing a bug in one provider connector (Claude/Codex), proactively audit the other connector for the same class of issue. Cache token handling was broken in both Claude and Codex independently — discovered only because the user explicitly cross-checked after fixing one.
+
+## Claude Streaming Usage Deduplication
+
+Claude Code writes multiple assistant JSONL lines per streaming API response, each carrying cumulative (not incremental) usage. Summing all of them double/triple counts tokens (~2.9x observed). Deduplicate by `message_id`: only use the delta between consecutive usage reports for the same message.
+
+## SSE + Fetch Race
+
+When a React hook does an initial HTTP fetch and simultaneously opens an SSE stream, events can arrive via SSE while the fetch is still loading. The stream handler must merge (not overwrite) using a Map keyed by seq/id so both sources coexist without duplication or dropped events. Pattern: `setEvents((current) => mergeEvents(page.events, current))`.
+
+## Model Pricing: Match Versioned IDs First
+
+`hasModelPrefix` matches greedily — `"gpt-5"` matches `"gpt-5.4"`, and `"claude-opus-4"` matches `"claude-opus-4-6"`. Model pricing cases must be ordered most-specific-first to prevent sub-models from falling through to base model rates. Opus 4.6 ($5/$25) fell through to Opus 4.0 ($15/$75) — a 3x overcharge.
+
+## Worktree Subdirectory Path Matching
+
+When checking if a shell's cwd is "in" a worktree, use `strings.HasPrefix(cwd, worktreePath+"/")` — not exact equality. A user in `/repo/internal/cli` is still in the `/repo` worktree. The trailing `/` prevents false matches like `/repo-backup` matching `/repo`.

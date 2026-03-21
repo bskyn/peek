@@ -1,7 +1,7 @@
 package companion
 
 import (
-	"os"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,80 +28,49 @@ func TestResolveProjectRuntimeFromConfig(t *testing.T) {
 	}
 }
 
-func TestResolveProjectRuntimeAutodetectsFrontend(t *testing.T) {
+func TestResolveProjectRuntimeRequiresManifestForRootApp(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(projectDir, "pnpm-lock.yaml"), []byte("lockfileVersion: 9"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte(`{
-  "name": "fixture-root",
-  "private": true,
-  "workspaces": ["apps/*"]
-}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(projectDir, "apps", "web"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "apps", "web", "package.json"), []byte(`{
+	writeRepoFile(t, projectDir, "package.json", `{
   "name": "fixture-web",
+  "packageManager": "pnpm@9.0.0",
   "scripts": {"dev": "vite"},
-  "dependencies": {"react": "^19.0.0", "vite": "^6.0.0"}
-}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "apps", "web", ".env.local"), []byte("HELLO=world\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+  "devDependencies": {"vite": "^6.0.0"}
+}`)
 
-	spec, err := ResolveProjectRuntime(projectDir)
-	if err != nil {
-		t.Fatalf("resolve autodetected runtime: %v", err)
+	_, err := ResolveProjectRuntime(projectDir)
+	var missing *MissingProjectRuntimeError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected missing manifest error, got %v", err)
 	}
-	if spec == nil {
-		t.Fatal("expected autodetected runtime")
-	}
-	if spec.ConfigSource != "autodetect" {
-		t.Fatalf("expected autodetect source, got %s", spec.ConfigSource)
-	}
-	if got := strings.Join(spec.Services[0].Command, " "); got != "pnpm --dir apps/web dev" {
-		t.Fatalf("unexpected dev command: %s", got)
-	}
-	if spec.Services[0].Ready.URL != "http://127.0.0.1:5173/" {
-		t.Fatalf("unexpected readiness url: %s", spec.Services[0].Ready.URL)
-	}
-	if len(spec.EnvSources) != 1 || spec.EnvSources[0].Path != filepath.Join("apps", "web", ".env.local") {
-		t.Fatalf("unexpected env sources: %+v", spec.EnvSources)
+	if len(missing.Candidates) != 1 || missing.Candidates[0].Path != "" {
+		t.Fatalf("unexpected candidates: %+v", missing.Candidates)
 	}
 }
 
-func TestResolveProjectRuntimeSkipsNestedPackageWithoutWorkspaceDeclaration(t *testing.T) {
+func TestResolveProjectRuntimeRequiresManifestForMonorepo(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(projectDir, "pnpm-lock.yaml"), []byte("lockfileVersion: 9"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte(`{
+	writeRepoFile(t, projectDir, "package.json", `{
   "name": "fixture-root",
-  "private": true
-}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(projectDir, "web"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "web", "package.json"), []byte(`{
-  "name": "fixture-web",
+  "packageManager": "pnpm@9.0.0"
+}`)
+	writeRepoFile(t, projectDir, "pnpm-workspace.yaml", "packages:\n  - apps/*\n")
+	writeRepoFile(t, projectDir, "apps/core/package.json", `{
+  "name": "core",
   "scripts": {"dev": "vite"},
-  "dependencies": {"react": "^19.0.0", "vite": "^6.0.0"}
-}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+  "devDependencies": {"vite": "^6.0.0"}
+}`)
+	writeRepoFile(t, projectDir, "apps/xyz/package.json", `{
+  "name": "xyz",
+  "scripts": {"dev": "vite"},
+  "devDependencies": {"vite": "^6.0.0"}
+}`)
 
-	spec, err := ResolveProjectRuntime(projectDir)
-	if err != nil {
-		t.Fatalf("resolve runtime: %v", err)
+	_, err := ResolveProjectRuntime(projectDir)
+	var missing *MissingProjectRuntimeError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected missing manifest error, got %v", err)
 	}
-	if spec != nil {
-		t.Fatalf("expected nested package without workspaces to be ignored, got %+v", spec)
+	if got, want := candidatePaths(missing.Candidates), []string{"apps/core", "apps/xyz"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("candidate paths = %v, want %v", got, want)
 	}
 }

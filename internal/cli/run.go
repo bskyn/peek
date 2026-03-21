@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -71,17 +72,18 @@ func runManaged(source managed.Source, extraArgs []string) error {
 		return err
 	}
 
-	projectDir, err := os.Getwd()
+	resolution, err := resolveProjectRootFromCWD()
 	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
+		return err
 	}
-	absProjectDir, err := filepath.Abs(projectDir)
-	if err != nil {
-		absProjectDir = projectDir
-	}
+	absProjectDir := resolution.ProjectRoot
 
 	runtimeSpec, err := companion.ResolveProjectRuntime(absProjectDir)
 	if err != nil {
+		var missing *companion.MissingProjectRuntimeError
+		if errors.As(err, &missing) {
+			return errors.New(renderMissingProjectRuntimeMessage(missing, resolution))
+		}
 		return fmt.Errorf("resolve project runtime: %w", err)
 	}
 
@@ -158,6 +160,63 @@ func runManaged(source managed.Source, extraArgs []string) error {
 
 	fmt.Printf("\nPeek: workspace %s frozen.\n", start.rootWorkspaceID)
 	return nil
+}
+
+func renderMissingProjectRuntimeMessage(err *companion.MissingProjectRuntimeError, resolution *projectRootResolution) string {
+	var b strings.Builder
+	if resolution != nil && !resolution.IsRepoRoot {
+		b.WriteString("Peek detected the repo root at ")
+		b.WriteString(resolution.ProjectRoot)
+		b.WriteString(" (invoked from ")
+		b.WriteString(resolution.CWD)
+		b.WriteString(").\n\n")
+	}
+	b.WriteString("Managed runs require an explicit ")
+	b.WriteString(companion.ConfigFileName)
+	b.WriteString(" in the repo root.\n\n")
+
+	switch {
+	case len(err.Candidates) > 1:
+		b.WriteString("This repo has multiple app candidates, so choose one explicitly:\n")
+		for _, candidate := range err.Candidates {
+			b.WriteString("- ")
+			b.WriteString(displayServicePath(candidate.Path))
+			if candidate.PackageName != "" {
+				b.WriteString(" (")
+				b.WriteString(candidate.PackageName)
+				b.WriteString(")")
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\nCreate the manifest from the repo root:\n")
+		b.WriteString("  peek manifest create --service <path>\n")
+	case len(err.Candidates) == 1:
+		b.WriteString("Create the manifest from the repo root:\n")
+		b.WriteString("  peek manifest create\n")
+		b.WriteString("\nPeek found one app candidate: ")
+		b.WriteString(displayServicePath(err.Candidates[0].Path))
+		if err.Candidates[0].PackageName != "" {
+			b.WriteString(" (")
+			b.WriteString(err.Candidates[0].PackageName)
+			b.WriteString(")")
+		}
+		b.WriteString("\n")
+	case err.PackageManager != companion.PackageManagerUnknown:
+		b.WriteString("Peek could not find a package.json with a dev script in the repo root or declared workspaces.\n\n")
+		b.WriteString("Run `peek manifest create` after adding the app package, or create ")
+		b.WriteString(companion.ConfigFileName)
+		b.WriteString(" manually.\n")
+	default:
+		b.WriteString("Create the manifest first:\n")
+		b.WriteString("  peek manifest create\n\n")
+		b.WriteString("Peek manifest scaffolding supports JS/TS repos with package.json#packageManager or a pnpm/npm/yarn/bun lockfile.\n")
+	}
+
+	b.WriteString("\nThen rerun:\n")
+	b.WriteString("  peek run claude\n")
+	b.WriteString("or\n")
+	b.WriteString("  peek run codex")
+	return b.String()
 }
 
 // tailManagedLaunch discovers or resumes the provider session file for one managed launch
