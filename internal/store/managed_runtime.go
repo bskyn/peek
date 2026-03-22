@@ -386,6 +386,8 @@ func parkManagedRuntimeTx(tx *sql.Tx, id, rootWorkspaceID, fallbackSessionID str
 		activeSessionID = rootSessionID
 	}
 
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
 	_, err = tx.Exec(
 		`UPDATE managed_runtimes
 		    SET status = ?,
@@ -396,8 +398,29 @@ func parkManagedRuntimeTx(tx *sql.Tx, id, rootWorkspaceID, fallbackSessionID str
 		string(ManagedRuntimeStopped),
 		rootWorkspaceID,
 		activeSessionID,
-		time.Now().UTC().Format(time.RFC3339Nano),
+		now,
 		id,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Freeze any active workspaces in the lineage — when a runtime parks,
+	// no workspace should remain active.
+	_, err = tx.Exec(
+		`WITH RECURSIVE lineage(id) AS (
+			SELECT id FROM workspaces WHERE id = ?
+			UNION ALL
+			SELECT w.id
+			  FROM workspaces w
+			  JOIN lineage l ON w.parent_workspace_id = l.id
+		)
+		UPDATE workspaces
+		   SET status = 'frozen', updated_at = ?
+		 WHERE id IN (SELECT id FROM lineage)
+		   AND status = 'active'`,
+		rootWorkspaceID,
+		now,
 	)
 	return err
 }

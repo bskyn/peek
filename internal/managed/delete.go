@@ -148,6 +148,17 @@ func (o *Orchestrator) PruneWorkspaceLineage(rootWorkspaceID string) (*PruneWork
 		return nil, fmt.Errorf("list lineage workspaces: %w", err)
 	}
 
+	// Freeze orphaned active workspaces — the runtime is confirmed stopped,
+	// so any remaining active status is stale.
+	for i, ws := range lineage {
+		if ws.Status == workspace.StatusActive {
+			if err := o.st.UpdateWorkspaceStatus(ws.ID, workspace.StatusFrozen); err != nil {
+				return nil, fmt.Errorf("freeze orphaned workspace %q: %w", ws.ID, err)
+			}
+			lineage[i].Status = workspace.StatusFrozen
+		}
+	}
+
 	refs := make([]string, 0)
 	seenRefs := make(map[string]struct{})
 	addRef := func(ref string) {

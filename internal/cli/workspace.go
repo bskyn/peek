@@ -3,9 +3,11 @@ package cli
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -38,7 +40,7 @@ func newWorkspaceListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List all workspaces",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			st, err := store.Open(dbPath)
 			if err != nil {
 				return err
@@ -50,23 +52,113 @@ func newWorkspaceListCmd() *cobra.Command {
 				return err
 			}
 			if len(summaries) == 0 {
-				fmt.Println("No workspaces found.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No workspaces found.")
 				return nil
 			}
 
-			for _, s := range summaries {
-				parent := ""
-				if s.ParentWorkspaceID != "" {
-					parent = fmt.Sprintf(" (from %s", s.ParentWorkspaceID)
-					if s.BranchFromSeq != nil {
-						parent += fmt.Sprintf(" @seq %d", *s.BranchFromSeq)
-					}
-					parent += ")"
-				}
-				fmt.Printf("  %s  [%s]  %s%s\n", s.ID, s.Status, s.ProjectPath, parent)
+			runtimeInfo, err := workspaceRuntimeInfoBySummary(st, summaries, time.Now())
+			if err != nil {
+				return err
 			}
+			renderWorkspaceList(cmd.OutOrStdout(), summaries, runtimeInfo)
 			return nil
 		},
+	}
+}
+
+type workspaceRuntimeInfo struct {
+	RuntimeID string
+	Source    string
+	State     string
+}
+
+func workspaceRuntimeInfoBySummary(st *store.Store, summaries []store.WorkspaceSummary, now time.Time) (map[string]workspaceRuntimeInfo, error) {
+	rootByWorkspace := make(map[string]string, len(summaries))
+	runtimeByRoot := make(map[string]*store.ManagedRuntime)
+	infoByWorkspace := make(map[string]workspaceRuntimeInfo, len(summaries))
+
+	for _, summary := range summaries {
+		rootID, ok := rootByWorkspace[summary.ID]
+		if !ok {
+			path, err := st.GetBranchPath(summary.ID)
+			if err != nil {
+				return nil, err
+			}
+			rootID = summary.ID
+			if len(path) > 0 {
+				rootID = path[0].WorkspaceID
+			}
+			rootByWorkspace[summary.ID] = rootID
+		}
+
+		rt, ok := runtimeByRoot[rootID]
+		if !ok {
+			loaded, err := st.GetManagedRuntimeByRootWorkspace(rootID)
+			if err != nil && err != sql.ErrNoRows {
+				return nil, err
+			}
+			rt = loaded
+			runtimeByRoot[rootID] = rt
+		}
+
+		infoByWorkspace[summary.ID] = workspaceRuntimeInfo{
+			RuntimeID: managedRuntimeID(rt),
+			Source:    managedRuntimeSource(rt),
+			State:     managedRuntimeDisplayState(rt, now),
+		}
+	}
+
+	return infoByWorkspace, nil
+}
+
+func managedRuntimeID(rt *store.ManagedRuntime) string {
+	if rt == nil {
+		return ""
+	}
+	return rt.ID
+}
+
+func managedRuntimeSource(rt *store.ManagedRuntime) string {
+	if rt == nil {
+		return ""
+	}
+	return rt.Source
+}
+
+func managedRuntimeDisplayState(rt *store.ManagedRuntime, now time.Time) string {
+	if rt == nil {
+		return "no-runtime"
+	}
+	if rt.Status == store.ManagedRuntimeStopped {
+		return "stopped"
+	}
+	if now.Sub(rt.HeartbeatAt) > managedRuntimeStaleAfter {
+		return "stale"
+	}
+	return "live"
+}
+
+func renderWorkspaceList(out io.Writer, summaries []store.WorkspaceSummary, runtimeInfo map[string]workspaceRuntimeInfo) {
+	for _, s := range summaries {
+		parent := ""
+		if s.ParentWorkspaceID != "" {
+			parent = fmt.Sprintf(" (from %s", s.ParentWorkspaceID)
+			if s.BranchFromSeq != nil {
+				parent += fmt.Sprintf(" @seq %d", *s.BranchFromSeq)
+			}
+			parent += ")"
+		}
+
+		info := runtimeInfo[s.ID]
+		runtimeLabel := info.State
+		if info.Source != "" {
+			runtimeLabel = fmt.Sprintf("%s %s", info.Source, info.State)
+		}
+		if info.RuntimeID != "" && info.State != "live" {
+			runtimeLabel += " " + info.RuntimeID
+		}
+
+		_, _ = fmt.Fprintf(out, "  %s  [%s]  [%s]  %s%s\n", s.ID, s.Status, runtimeLabel, s.ProjectPath, parent)
 	}
 }
 
