@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -75,7 +74,7 @@ func acquireManagedStartLock(projectPath string) (*managedStartLock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open managed-start lock %s: %w", lockPath, err)
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(file); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("lock managed-start %s: %w", lockPath, err)
 	}
@@ -86,7 +85,7 @@ func (l *managedStartLock) Close() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil {
+	if err := unlockFile(l.file); err != nil {
 		_ = l.file.Close()
 		return err
 	}

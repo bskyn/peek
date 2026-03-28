@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/bskyn/peek/internal/store"
@@ -432,7 +431,7 @@ func (m *Manager) startServices(ctx context.Context, workspaceID, worktreePath s
 		command.Env = mergeEnv(resolved.Env)
 		command.Stdout = io.Discard
 		command.Stderr = io.Discard
-		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		configureServiceCommand(command)
 
 		handle := &serviceHandle{
 			spec:   service,
@@ -668,12 +667,12 @@ func stopHandle(ctx context.Context, handle *serviceHandle) error {
 	if handle.cmd == nil || handle.cmd.Process == nil {
 		return nil
 	}
-	_ = handle.cmd.Process.Signal(syscall.SIGINT)
+	_ = interruptProcess(handle.cmd.Process.Pid)
 	select {
 	case <-handle.done:
 		return nil
 	case <-ctx.Done():
-		_ = handle.cmd.Process.Kill()
+		_ = killProcess(handle.cmd.Process.Pid)
 		<-handle.done
 	}
 	return nil
@@ -872,18 +871,11 @@ func isPortLeaseConflict(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: port_leases.host, port_leases.port")
 }
 
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	return syscall.Kill(pid, 0) == nil
-}
-
 func stopPID(ctx context.Context, pid int) error {
 	if pid <= 0 {
 		return nil
 	}
-	_ = signalProcessGroupOrProcess(pid, syscall.SIGINT)
+	_ = interruptProcess(pid)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -892,19 +884,9 @@ func stopPID(ctx context.Context, pid int) error {
 		}
 		select {
 		case <-ctx.Done():
-			_ = signalProcessGroupOrProcess(pid, syscall.SIGKILL)
+			_ = killProcess(pid)
 			return nil
 		case <-ticker.C:
 		}
 	}
-}
-
-func signalProcessGroupOrProcess(pid int, sig syscall.Signal) error {
-	if pid <= 0 {
-		return nil
-	}
-	if err := syscall.Kill(-pid, sig); err == nil || errors.Is(err, syscall.ESRCH) {
-		return nil
-	}
-	return syscall.Kill(pid, sig)
 }
