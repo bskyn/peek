@@ -11,7 +11,7 @@ import { useSessions } from '../hooks/useSessions';
 import { switchRuntimeWorkspace } from '../lib/api';
 import { buildHeaderTitle, deriveDisplayStatus, formatDateTime } from '../lib/format';
 import { openStream } from '../lib/stream';
-import type { ViewerShellFollowHint, ViewerStatus, ViewerWorkspaceTransition } from '../lib/types';
+import type { ViewerStatus, ViewerWorkspaceTransition } from '../lib/types';
 
 const runtimeStatusPollAttempts = 6;
 const runtimeStatusPollDelayMS = 250;
@@ -45,15 +45,6 @@ async function waitForRuntimeSwitchConvergence(
   }
 
   return lastStatus;
-}
-
-function buildShellFollowHint(runtimeID: string): ViewerShellFollowHint {
-  return {
-    runtime_id: runtimeID,
-    init_command: 'eval "$(peek shell init zsh)"',
-    attach_command: `eval "$(peek shell attach ${runtimeID})"`,
-    status_command: 'peek shell status',
-  };
 }
 
 function workspaceTransitionSummary(
@@ -122,7 +113,6 @@ export function App() {
   const [switchTransition, setSwitchTransition] = useState<ViewerWorkspaceTransition>({
     status: 'idle',
   });
-  const [shellCommandFeedback, setShellCommandFeedback] = useState('');
   const workspaceSwitchRequestIDRef = useRef(0);
 
   const navigateToSession = useCallback(
@@ -217,8 +207,6 @@ export function App() {
     switchTransition.status === 'idle' || switchTransition.runtime_id === selectedRuntimeID
       ? switchTransition
       : ({ status: 'idle' } as const);
-  const shellFollowHint =
-    selectedRuntimeID === '' ? undefined : buildShellFollowHint(selectedRuntimeID);
   const transitionSummary = workspaceTransitionSummary(visibleTransition, activeWorkspaceID);
 
   useEffect(() => {
@@ -250,7 +238,6 @@ export function App() {
   }, [activeSessionID, navigateToRuntime, selectedRuntimeID, selectedSessionID]);
 
   useEffect(() => {
-    setShellCommandFeedback('');
     setSwitchTransition((current) => {
       if (current.status === 'idle') {
         return current;
@@ -262,25 +249,11 @@ export function App() {
     });
   }, [selectedRuntimeID]);
 
-  const handleCopyShellCommand = useCallback(async (label: string, command: string) => {
-    if (typeof navigator === 'undefined' || navigator.clipboard == null) {
-      setShellCommandFeedback(`Clipboard unavailable. Run: ${command}`);
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(command);
-      setShellCommandFeedback(`${label} copied to the clipboard.`);
-    } catch {
-      setShellCommandFeedback(`Copy failed. Run: ${command}`);
-    }
-  }, []);
-
   const handleWorkspaceSwitch = useCallback(
     async (workspaceId: string) => {
       if (selectedRuntimeID === '') return;
       const requestID = workspaceSwitchRequestIDRef.current + 1;
       workspaceSwitchRequestIDRef.current = requestID;
-      setShellCommandFeedback('');
       setSwitchTransition({
         status: 'switching',
         runtime_id: selectedRuntimeID,
@@ -481,56 +454,6 @@ export function App() {
                 ) : null}
               </div>
             </div>
-            {shellFollowHint != null ? (
-              <div className="rounded-lg border border-surface-0 bg-mantle px-3 py-3">
-                <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-overlay-0">
-                  Shell Follow
-                </p>
-                <h3 className="mt-1 text-[12px] font-semibold text-text">
-                  Attached shells follow on the next prompt
-                </h3>
-                <p className="mt-2 text-[11px] leading-5 text-subtext-0">
-                  Browser switches affect only shells attached to runtime{' '}
-                  <span className="font-mono text-text">{shellFollowHint.runtime_id}</span>. Unhooked
-                  or detached shells stay in their current cwd.
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void handleCopyShellCommand('Attach command', shellFollowHint.attach_command)
-                    }
-                    className="rounded-full border border-surface-0 bg-base px-2.5 py-1 text-[10px] font-medium text-subtext-0"
-                  >
-                    Copy attach
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void handleCopyShellCommand('Hook setup', shellFollowHint.init_command)
-                    }
-                    className="rounded-full border border-surface-0 bg-base px-2.5 py-1 text-[10px] font-medium text-subtext-0"
-                  >
-                    Copy setup
-                  </button>
-                </div>
-                <div className="mt-3 space-y-2">
-                  <p className="rounded-md border border-surface-0 bg-base px-2.5 py-2 font-mono text-[10px] text-subtext-0">
-                    {shellFollowHint.attach_command}
-                  </p>
-                  <p className="rounded-md border border-surface-0 bg-base px-2.5 py-2 font-mono text-[10px] text-subtext-0">
-                    {shellFollowHint.init_command}
-                  </p>
-                  <p className="text-[10px] text-overlay-0">
-                    Verify the binding with{' '}
-                    <span className="font-mono text-subtext-0">{shellFollowHint.status_command}</span>.
-                  </p>
-                </div>
-                {shellCommandFeedback !== '' ? (
-                  <p className="mt-2 text-[10px] text-sky">{shellCommandFeedback}</p>
-                ) : null}
-              </div>
-            ) : null}
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             {workspaces.map((entry) => {
