@@ -5,8 +5,8 @@ project_name: peek
 before:
   hooks:
     - go mod tidy
-    - cd web && CI=true corepack pnpm install --frozen-lockfile
-    - cd web && corepack pnpm run build
+    - sh -c "cd web && CI=true corepack pnpm install --frozen-lockfile"
+    - sh -c "cd web && corepack pnpm run build"
 
 builds:
   - main: ./cmd/peek
